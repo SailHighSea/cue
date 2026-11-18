@@ -25,6 +25,8 @@ An update appears on the home screen, in More, and in About. It can be skipped f
 
 For manual publication, run `make setup`, create the matching GitHub tag/release, and attach `Cue-<version>-Setup.exe`, `Cue-<version>-Setup.exe.sha256` and `Cue-<version>-Engine-Source.zip`. GitHub supplies Cue's source archives for the tag. For the current release, use `v1.4`.
 
+The `Portable release` workflow (`.github/workflows/portable-release.yml`) runs when a release is published, builds `Cue-<version>-Portable-x64.zip` and attaches it with its `.sha256`. Since `libmpv-2.dll` is not in the repository, attach it to the release as an asset named `libmpv-2.dll` or set the `LIBMPV_URL` Actions variable; it must match the SHA-256 in `third_party/libmpv/manifest.json`. It can also be run manually (Actions > Portable release) with an existing tag. The updater only picks the Setup `.exe`, so the zip does not affect updates.
+
 Keep the matching engine source ZIP and license notices available beside the download. The installer contains `sources/README.txt` pointing to that release rather than bundling the large source archives.
 
 ## Installer

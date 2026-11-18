@@ -1,0 +1,76 @@
+name: Portable release
+
+# Builds Cue-<version>-Portable-x64.zip (the build/Cue folder: Cue.exe, libmpv-2.dll, fonts,
+# licenses, docs) and attaches it to the GitHub release. Runs when a release is published,
+# or manually for an existing tag.
+#
+# libmpv-2.dll is not in the repository. It is taken from, in order:
+#   1. a `libmpv-2.dll` asset on the release itself, or
+#   2. the LIBMPV_URL repository variable (Settings > Secrets and variables > Actions > Variables).
+# Either way it must match the SHA-256 pinned in third_party/libmpv/manifest.json.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to attach the portable zip to (e.g. v1.4)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix python3
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+
+      - name: Check tag matches version.h
+        run: |
+          VERSION=$(sed -n 's/^#define CUE_VERSION "\(.*\)"/\1/p' src/core/version.h)
+          [[ "$TAG" == "v$VERSION" ]] || { echo "Tag $TAG does not match CUE_VERSION $VERSION" >&2; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build Cue.exe (GitHub edition)
+        run: make OFFICIAL=1 -j"$(nproc)"
+
+      - name: Fetch libmpv-2.dll
+        env:
+          LIBMPV_URL: ${{ vars.LIBMPV_URL }}
+        run: |
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern libmpv-2.dll --dir build/Cue 2>/dev/null; then
+            echo "libmpv-2.dll taken from release $TAG"
+          elif [[ -n "$LIBMPV_URL" ]]; then
+            curl --fail --location --silent --show-error "$LIBMPV_URL" -o build/Cue/libmpv-2.dll
+          else
+            echo "No libmpv-2.dll: attach one to the release or set the LIBMPV_URL variable." >&2
+            exit 1
+          fi
+          EXPECTED=$(python3 -c "import json;print(json.load(open('third_party/libmpv/manifest.json'))['sha256'])")
+          echo "$EXPECTED  build/Cue/libmpv-2.dll" | sha256sum -c -
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          ZIP="Cue-$VERSION-Portable-x64.zip"
+          rm -f "dist/$ZIP"
+          (cd build && zip -r -9 -q "../dist/$ZIP" Cue)
+          (cd dist && sha256sum "$ZIP" > "$ZIP.sha256")
+          ls -l dist
+
+      - name: Upload to release
+        run: gh release upload "$TAG" dist/Cue-$VERSION-Portable-x64.zip dist/Cue-$VERSION-Portable-x64.zip.sha256 --repo "$GITHUB_REPOSITORY" --clobber
