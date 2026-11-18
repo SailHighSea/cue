@@ -1,5 +1,5 @@
 // Keyboard shortcuts (issue #12) and black and white music (issue #11).
-//   ? opens the shortcut sheet from anywhere in playback and closes it again; Esc closes it (back
+//   ? opens the shortcut sheet (24 entries: Page Up / Page Down for chapters since 1.4) from anywhere in playback and closes it again; Esc closes it (back
 //   to About when it was opened there). The whole sheet fits every window, in every language,
 //   clear of the window's buttons; two columns when there is room. A button's name says its key.
 //   Black and white is a choice in the picture's menu, saved, colour by default.
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
           for (auto& row : p.rows_) if (row.k == PlayView::RK::Keys) {
             if (row.kh.section) ++sections; else { ++entries; assert(!row.kh.caps.empty() && !row.kh.label.empty()); }
           }
-          assert(entries == 23 && (sections == 4 || (sections == 0 && size.second <= 240 * scale)));  // titles go only in the tiniest
+          assert(entries == 25 && (sections == 4 || (sections == 0 && size.second <= 240 * scale)));  // titles go only in the tiniest
           two_cols += p.keys_cols_ == 2;
           ++sheets;
           // nothing to focus in it; ? again closes it, and so does Esc

@@ -172,6 +172,28 @@ int main() {
       if (p.music_stacked()) p.in.music_view = music_view(p.in.music_scene, fr, W, H, H, p.music_stack_below(), p.music_stack_above());
       p.changed(t); p.activity(t); p.tick(t, 1 / 60.0); p.take_actions(); p.prepare(t);
     }
+    if (p.music_card_mode() == 1) {
+      // (since the rascunho of 14/11 a small window is the Compacto: the timeline on the cover's
+      // foot, previous · play · next under it, centred on the cover; no volume, no "...")
+      Rect cr = p.card_cover(), d = p.dock_rect();
+      assert(cr.w > 0 && std::abs(d.x + d.w / 2 - cr.cx()) <= 2 && d.y < cr.b() && d.b() <= H);
+      assert(p.tl_.w == d.w && std::abs(d.y + p.tl_.y - (cr.b() - p.s_)) <= p.s_);
+      for (int id : {PlayView::B_PREV, PlayView::B_PLAY, PlayView::B_NEXT}) assert(p.in_bar(id));
+      assert(!p.in_bar(PlayView::B_VOL) && !p.in_bar(PlayView::B_MORE) && p.pinned());
+      continue;
+    }
+    if (p.music_card_mode() == 5) {
+      // (since the rascunho of 14/11 a tall window: the cover at the top, its words under it, then
+      // the queue, and along the foot the timeline over volume · previous · play · next · "...")
+      Rect cr = p.card_cover(), d = p.dock_rect(), q = p.music_queue_rect();
+      assert(cr.w > 0 && std::abs(cr.cx() - W / 2) <= 2 && cr.y >= p.music_stack_above() && cr.x >= 0 && cr.r() <= W);
+      assert(d.y > cr.b() && d.b() <= H && d.x >= 0 && d.r() <= W && d.w >= W * 8 / 10);
+      assert(p.tl_.y < 16 * p.s_);                                            // the timeline is the first row
+      for (int id : {PlayView::B_PREV, PlayView::B_PLAY, PlayView::B_NEXT, PlayView::B_VOL, PlayView::B_MORE}) assert(p.in_bar(id));
+      if (q.w > 0) assert(q.y > cr.b() && q.b() <= d.y && q.x >= 0 && q.r() <= W);  // the queue between the words and the bar
+      assert(p.pinned());
+      continue;
+    }
     assert(p.music_stacked() && p.music_compact_ && p.dh_ == (int)std::lround(38 * p.s_));
     Rect cr = p.cover_screen_rect(), d = p.dock_rect();
     assert(std::abs(d.x + d.w / 2 - cr.cx()) <= 2);                         // under the cover's middle
@@ -302,7 +324,7 @@ int main() {
     // ...out of sight (cloaked) while it changes size: the last big frame never shows squeezed
     assert(app.find("set_cloak(true);") != std::string::npos && app.find("if (cloaked_) return false;") != std::string::npos);
     // a song's card stays the card from song to song (no fall back to the spectrum in between)
-    assert(app.find("music_frame_ = mini_player_ && !fullscreen_ ? MusicFrame::Card : music_frame_for(cw_, ch_, s_);") != std::string::npos);
+    assert(app.find("music_frame_ = mini_player_ && !fullscreen_ ? MusicFrame::Card : music_frame_for(cw_, ch_, music_frame_scale(dpi_, cw_, ch_, store_.ui_scale), music_frame_, dpi_ / 96.0);") != std::string::npos);
     // a film's mini player never smaller than a watchable size; a song's card in its range, at
     // every interface size (see card_size_test: its pixels step down at the large sizes)
     assert(app.find("(audio_only_ ? (smallest ? 440 : 640) : (smallest ? 480 : 800)) * k") != std::string::npos);
@@ -324,17 +346,28 @@ int main() {
     // the old one stays in use
     std::ifstream fp("src/win/platform.cpp"); std::stringstream sp; sp << fp.rdbuf();
     assert(sp.str().find("if (!MoveFileExW(from.c_str(), now.c_str(), 0)) return false;") != std::string::npos);
-    assert(sp.str().find("if (dir_exists(now)) return now;\n  if (dir_exists(was)) return was;") != std::string::npos);
+    // (the GitHub edition: the new folder first, then the old ones; the Store edition only ever
+    // uses the new one, in its #if branch between the two)
+    {
+      const std::string p = sp.str();
+      const size_t now_first = p.find("if (dir_exists(now)) return now;\n");
+      const size_t store = p.find("#if CUE_STORE_BUILD", now_first);
+      const size_t github = p.find("#else\n  if (dir_exists(was)) return was;\n  if (dir_exists(older)) return older;", store);
+      assert(now_first != std::string::npos && store != std::string::npos && github != std::string::npos);
+    }
     assert(app.find("const bool moved = migrate_data_dir();") < app.find("data_dir_ = std::filesystem::path(data_dir());"));
     // state.json: swapped in with the previous one kept as the backup in one call (no copy),
     // patient with an antivirus holding the file for a moment
     std::ifstream fs2("src/core/store.cpp"); std::stringstream ss2; ss2 << fs2.rdbuf();
     assert(ss2.str().find("ReplaceFileW(path.c_str(), tmp.c_str(), bak.c_str()") != std::string::npos);
     std::ifstream fa("src/win/ambient.cpp"); std::stringstream sa; sa << fa.rdbuf();
-    assert(sa.str().find("if (defer_geometry) { alpha_ = 0; hide();") != std::string::npos);
+    assert(sa.str().find("if (defer_geometry) { reveal_.cut(); hide();") != std::string::npos);
     // the ambient light turned off and on again over a paused film: painted (shown) at once, not
     // left hidden until the next frame changes its colours
-    assert(sa.str().find("if ((colors_dirty_ && since_paint_ >= 1.0 / 30 - 0.002) || last_a_ < 0) paint(owner);") != std::string::npos);
+    // (17/11: a small change waits a tick or two; anything larger at the 30 Hz pace; the light coming
+    // or going, the same rule for its levels)
+    assert(sa.str().find("int ticks = colors_dirty_ ? ticks_for_change() : 4;") != std::string::npos);
+    assert(sa.str().find("if ((ticks < 4 && since_paint_ >= ticks / 30.0 - 0.002) || last_a_ < 0) paint(owner);") != std::string::npos);
     // Shift read with every move of the pointer, and while the bar is held still
     assert(app.find("play_.set_shift(GetKeyState(VK_SHIFT) < 0);") != std::string::npos);
     assert(app.find("if (play_.dock_dragging() && play_.set_shift(GetKeyState(VK_SHIFT) < 0)) ensure_anim();") != std::string::npos);

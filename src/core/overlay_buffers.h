@@ -9,11 +9,15 @@ struct OverlayBuffers {
   std::vector<uint32_t> buf[2];
   int on_screen = -1, sending = -1;
   bool inflight = false, shown = false, removing = false;
+  // the engine holds the layer's latest pixels (buf[on_screen]): only then may a move alone send
+  // that buffer again instead of a copy (a refused picture leaves the older one on screen)
+  bool current = false, sending_latest = false;
   FrameCadence cadence;
 
   void added(bool success) {
     inflight = false;
-    if (success && sending >= 0) on_screen = sending;
+    if (success && sending >= 0) { on_screen = sending; current = sending_latest; }
+    else current = false;
     sending = -1;
   }
   size_t retained_bytes() const { return (buf[0].capacity() + buf[1].capacity()) * sizeof(uint32_t); }
@@ -22,6 +26,7 @@ struct OverlayBuffers {
     if (!success) return; // failed removal does not end the renderer's lease
     shown = false;
     on_screen = -1;
+    current = false;
     if (!inflight && retained_bytes() >= 1024 * 1024) {
       for (auto& pixels : buf) std::vector<uint32_t>().swap(pixels);
     }

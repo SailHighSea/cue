@@ -33,8 +33,8 @@ const server=http.createServer((req,res)=>{
    createBiquadFilter(){return this.mark(super.createBiquadFilter());}
   };}
   window.WebSocket=class {
-   constructor(){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();},5);}
-   send(data){if(JSON.parse(data).t==='auth')setTimeout(()=>this.onmessage?.({data:JSON.stringify({t:'hello',pc:'test'})}),1);}
+   constructor(){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();this.onmessage?.({data:'{"t":"chal","n":"0123456789abcdef0123456789abcdef"}'});},5);}
+   send(data){if(JSON.parse(data).t==='auth')setTimeout(()=>this.onmessage?.({data:JSON.stringify({t:'hello',sid:'a1b2c3d4e5f60718',pc:'test'})}),1);}
    close(){this.readyState=3;}
   };
  });

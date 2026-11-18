@@ -32,11 +32,27 @@ struct SubStyle {
 constexpr double kSubPosTop = 16, kSubPosCenter = 56, kSubPosBottom = 93;
 constexpr double kSubPosMin = 12, kSubPosMax = 97;
 
+// A chapter of a film (MKV and MP4 carry them): where it starts and its name ("" when unnamed).
+struct Chapter {
+  double t = 0;
+  std::string title;
+  bool operator==(const Chapter& o) const { return t == o.t && title == o.title; }
+};
+// The chapter playing at `t`: the last one starting at or before it, -1 before the first or
+// without chapters. A file with a single chapter has none worth showing (see chapters_shown).
+inline int chapter_at(const std::vector<Chapter>& c, double t) {
+  int k = -1;
+  for (int i = 0; i < (int)c.size(); ++i) if (c[i].t <= t + 1e-6) k = i; else break;
+  return k;
+}
+inline bool chapters_shown(const std::vector<Chapter>& c) { return c.size() >= 2; }
+
 struct Track {
   int64_t id = 0;
   std::string type;  // video | audio | sub
   std::string lang, title, codec;
   bool selected = false, external = false, forced = false, is_default = false;
+  std::string external_file;  // an external track's file (subtitles or sound loaded beside the film)
   bool albumart = false;
   int demux_w = 0, demux_h = 0;  // a picture's own size, when the file says
   double demux_fps = 0;          // a film's frame rate, when the file says
@@ -60,6 +76,10 @@ struct RecentItem {
   std::string sid_lang, aid_lang;
   bool sub_visible = true;
   double sub_delay = 0;
+  // what the home says of it beyond its name: a song's artist (from its tags), a book's chapters
+  // and the one it was left in (-1: unknown)
+  std::string artist;
+  int chapters = 0, chapter = -1;
 };
 
 enum class DockAnchor { BottomCenter = 0, TopCenter, BottomLeft, BottomRight, Free };

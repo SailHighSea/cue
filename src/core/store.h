@@ -6,6 +6,7 @@
 // Versioned schema, defaults for anything missing, migration from older files, a backup
 // copy, and a corrupt file never takes the app down (it is set aside and defaults are used).
 #pragma once
+#include <map>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -25,8 +26,10 @@ struct SettingsStore {
   bool music_mono = false;     // music in black and white (its spectrum and light); colour by default
   bool cover_tilt = true;      // the music's cover leans under the pointer
   int mini_sub_size = 0;  // the film mini player's subtitles: 0 as the full player's, 1 larger, 2 largest
+  bool home_covers = true;  // the home's recent files with their pictures ("continuar" apart); off: a list of words
   bool settings_examples = true;  // Settings shows each setting at work (a picture and a line); off: the settings alone
   bool mini_pinned = false;    // the mini player stays above other windows (the pin, chosen in it)
+  bool chapters = true;  // a film's chapters: the timeline's breaks, their list and Page Up / Page Down (a choice; on by default)
   bool smooth_motion = false;  // films: frames blend at their changes where the screen's rate does not match (a choice)
   bool loop = false;           // repeat the file (the dock's repeat button)
   bool loop_all = false;       // repeat the queue: after its last item, the first again
@@ -49,11 +52,33 @@ struct SettingsStore {
   int64_t update_checked = 0;
   std::string update_available, update_skipped;
   // the phone remote: on (its server starts with Cue), the pairing sound, the folders the phone
-  // may open, and the phones that paired (tokens; the oldest is forgotten past remote::kMaxTokens)
+  // may open, and the phones that paired (their credentials; the oldest is forgotten past
+  // remote::kMaxTokens).
+  // On disk the credentials are sealed (secret_store.h: DPAPI on Windows) under "credentials";
+  // in memory remote_tokens holds them in the clear, but only once unseal_remote() has run (the
+  // remote starts): opening Cue never waits for DPAPI. remote_sealed is what state.json holds,
+  // in the same order; a credential keeps its sealed form from save to save, so an unchanged
+  // state is not written again. A state.json from before 1.4 held the credentials in the clear
+  // ("tokens"): they are read as they are and sealed by seal_remote() (the phones stay paired).
   struct RemoteFolder { std::string path; bool on = true; };
   bool remote_on = false, remote_sound = true, remote_folders_set = false;
   std::vector<RemoteFolder> remote_folders;
   std::vector<std::string> remote_tokens;
+  std::vector<std::string> remote_sealed;
+  bool remote_unsealed = true;       // remote_tokens is current (nothing sealed, unsealed, or set since)
+  bool remote_needs_seal = false;    // read in the clear from an older state.json
+  std::map<std::string, std::string> remote_seal_cache;  // credential -> its sealed form
+  // Reads the credentials out of remote_sealed (once; an unreadable one is dropped: that phone
+  // pairs again). Returns how many were dropped.
+  int unseal_remote();
+  // remote_tokens changed (a phone paired, or all were forgotten): seals what is new, keeps the
+  // sealed form of the others. Does nothing while the credentials are still sealed.
+  void seal_remote();
+  // every phone forgotten (the remote turned off): nothing left in memory or on disk
+  void forget_remote() {
+    remote_tokens.clear(); remote_sealed.clear(); remote_seal_cache.clear();
+    remote_unsealed = true; remote_needs_seal = false;
+  }
 
   // ── session ────────────────────────────────────────────────────
   DockPlace dock;
@@ -75,7 +100,10 @@ struct SettingsStore {
   RecentItem& touch(const std::string& media_path, double dur, int64_t now);
   bool set_position(const std::string& media_path, double pos, double dur); // false when unchanged
   void clear_recents() { recents.clear(); }
-  // Where to resume, or -1. Skips the very start and the very end.
+  // Where to resume, or -1. Skips the very start and the very end, and anything under 10 minutes
+  // (kShortClip): a clip, a trailer, a song starts over. Its place is still noted (the home and the
+  // phone use it to tell a file watched to its end from one left halfway), never gone back to.
+  static constexpr double kShortClip = 10 * 60;
   double resume_point(const std::string& media_path) const;
   SubStyle style_for(const std::string& media_path) const;
   void set_style_for(const std::string& media_path, const SubStyle& st);

@@ -17,6 +17,7 @@ int main() {
   assert(compare_versions("1.2.0", "1.2.0-beta") == 1);
   assert(compare_versions("2", "1.99.99") == 1);
   assert(compare_versions(CUE_VERSION, "0.9") == 1);
+  assert(compare_versions("v1.4", "1.3.2") == 1 && compare_versions("1.4", "1.3.3") == 1);  // the 1.4 release reaches 1.3.x
   assert(short_version("v1.2.0") == "1.2" && short_version("1.2.1") == "1.2.1");
 
   const int64_t day = 24 * 3600, now = 1800000000;
@@ -42,5 +43,14 @@ int main() {
   ReleaseInfo nd;
   assert(parse_release(R"({"tag_name":"1.4","assets":[{"name":"cue-setup.exe","browser_download_url":"https://x/y"}]})", nd));
   assert(nd.sha256.empty() && nd.version == "1.4");
+  // where an update may come from: GitHub and its download hosts, nothing that only looks like them
+  for (const char* host : {"github.com", "api.github.com", "GitHub.com", "objects.githubusercontent.com",
+                           "release-assets.githubusercontent.com", "a.b.githubusercontent.com"})
+    assert(update_host_allowed(host));
+  for (const char* host : {"", "githubusercontent.com", "evilgithubusercontent.com", "github.com.evil.example",
+                           "evil-github.com", "gist.github.com", "x.github.io", ".githubusercontent.com",
+                           "a..githubusercontent.com", "github.com:443", "user@github.com", "objects.githubusercontent.com."})
+    assert(!update_host_allowed(host));
+  puts("Updates: allowed hosts passed");
   puts("Updates: version order, 3-day schedule, release parsing, installer asset and digest passed");
 }

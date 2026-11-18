@@ -5,7 +5,10 @@
 #include "../src/core/json.h"
 #include "../src/core/store.h"
 #include <filesystem>
+#include "../src/core/secret_store.h"
 #include <cassert>
+#include <fstream>
+#include <sstream>
 #include <cstdio>
 #include <cstring>
 
@@ -135,6 +138,11 @@ static void json_checks() {
   assert(json_parse(state_json(s), j));
   assert(j["t"].str() == "state" && j["view"].str() == "play" && j["file"].str() == "Fala \"aí\".mkv");
   assert(j["pos"].num() == 12.5 && j["sub"]["posDefault"].num() == 93 && j["next"].str() == "S01E04");
+  // the file before this one in the queue: the phone's back button asks the PC for it ("prev")
+  assert(j["prev"].str().empty());
+  s.prev = "02 song.mp3";
+  assert(json_parse(state_json(s), j) && j["prev"].str() == "02 song.mp3");
+  s.prev.clear();
   assert(j["lang"].t == JVal::Null);  // unset: omitted
   s.lang = "ru";
   assert(json_parse(state_json(s), j) && j["lang"].str() == "ru");  // the page reloads its words when this changes
@@ -144,6 +152,15 @@ static void json_checks() {
   s.audio_only = true;
   assert(json_parse(state_json(s), j) && j["title"].str() == "Dream Sequence" && j["artist"].str() == "Jane Remover \xc2\xb7 Census Designated");
   s.audio_only = false; s.title.clear(); s.artist.clear();
+  // a film's chapters: two or more travel (start to the ms, rounded up, so a jump lands inside
+  // its chapter); one alone, or none (the PC has them off), not at all
+  s.chapters = {{0, "Abertura"}};
+  assert(json_parse(state_json(s), j) && j["ch"].t == JVal::Null);
+  s.chapters = {{0, "Abertura"}, {1190.0004, ""}, {2310.5, "A \"liga\xc3\xa7\xc3\xa3o\""}};
+  assert(json_parse(state_json(s), j) && j["ch"].t == JVal::Arr && j["ch"].a.size() == 3);
+  assert(j["ch"].a[1].a[0].num() == 1190.001 && j["ch"].a[1].a[1].str().empty());
+  assert(j["ch"].a[2].a[0].num() == 2310.5 && j["ch"].a[2].a[1].str() == "A \"liga\xc3\xa7\xc3\xa3o\"");
+  s.chapters.clear();
   // the words of Windows' media card
   {
     std::string t, u;
@@ -157,6 +174,7 @@ static void json_checks() {
   }
   Command c;
   assert(parse_command("{\"c\":\"seek\",\"v\":61.5}", c) && c.c == "seek" && c.has_v && c.v == 61.5);
+  assert(parse_command("{\"c\":\"prev\"}", c) && c.c == "prev" && !c.has_v);  // since 1.4: the PC picks the file
   assert(parse_command("{\"c\":\"open\",\"path\":\"C:\\\\a.mkv\"}", c) && c.path == "C:\\a.mkv" && !c.has_v);
   assert(!parse_command("{\"v\":1}", c) && !parse_command("nope", c) && !parse_command("[1]", c));
   std::vector<Entry> es = {{"pasta", "C:\\p", true, false, false, 0, 0}, {"a.mkv", "C:\\p\\a.mkv", false, false, false, 30, 60}};
@@ -175,13 +193,76 @@ static void store_checks() {
   a.remote_folders_set = true;
   a.remote_folders = {{"C:\\Users\\a\\Vídeos", true}, {"D:\\Filmes", false}};
   a.remote_tokens = {std::string(64, 'a'), std::string(64, 'b'), "short"};
+  a.seal_remote();
+  assert(a.remote_sealed.size() == 2);  // a malformed token is never kept
   assert(a.save(file));
+  auto read_file = [&] { std::ifstream f(file, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); };
+  {
+    const std::string text = read_file();
+    assert(text.find("\"credentials\"") != std::string::npos && text.find("\"tokens\"") == std::string::npos);
+#ifdef _WIN32
+    // Windows: sealed by DPAPI, the credentials themselves nowhere in the file
+    assert(text.find("dpapi:") != std::string::npos);
+    assert(text.find(std::string(64, 'a')) == std::string::npos && text.find(std::string(64, 'b')) == std::string::npos);
+#endif
+  }
   Store b;
   assert(b.load(file));
   assert(b.remote_on && !b.remote_sound && b.remote_folders_set && b.remote_folders.size() == 2);
   assert(b.remote_folders[0].path == "C:\\Users\\a\\Vídeos" && b.remote_folders[0].on && !b.remote_folders[1].on);
-  assert(b.remote_tokens.size() == 2);  // a malformed token is never trusted
+  // still sealed after loading: opening Cue never waits for the credentials
+  assert(b.remote_tokens.empty() && !b.remote_unsealed && b.remote_sealed.size() == 2);
+  b.seal_remote();  // nothing to do while sealed: the sealed credentials are not lost
+  assert(b.remote_sealed.size() == 2);
+  assert(b.unseal_remote() == 0 && b.remote_unsealed);
+  assert(b.remote_tokens.size() == 2 && b.remote_tokens[0] == std::string(64, 'a') && b.remote_tokens[1] == std::string(64, 'b'));
   assert(b.news_seen == "1.1");
+  // an unchanged state stays byte for byte the same: the sealed form is kept from save to save
+  {
+    const std::string before = read_file();
+    b.seal_remote();
+    assert(b.save(file) && read_file() == before);
+    // a new phone: only it is sealed; the others keep their form
+    b.remote_tokens.push_back(std::string(64, 'c'));
+    b.seal_remote();
+    assert(b.remote_sealed.size() == 3);
+    assert(b.save(file));
+    Store c;
+    assert(c.load(file) && c.unseal_remote() == 0 && c.remote_tokens.size() == 3 && c.remote_tokens[2] == std::string(64, 'c'));
+    // all forgotten (the remote turned off): nothing remains on disk
+    c.remote_tokens.clear();
+    c.seal_remote();
+    assert(c.remote_sealed.empty() && c.save(file));
+    Store d;
+    assert(d.load(file) && d.remote_unsealed && d.remote_tokens.empty() && d.remote_sealed.empty());
+  }
+  // a state.json from before 1.4 (credentials in the clear): the phones stay paired, and the
+  // next save writes them only sealed
+  {
+    { std::ofstream f(file, std::ios::binary | std::ios::trunc);
+      f << "{\"schema\":2,\"prefs\":{\"remote\":{\"on\":true,\"tokens\":[\"" << std::string(64, 'd') << "\", \"bad\"]}}}"; }
+    Store old;
+    assert(old.load(file));
+    assert(old.remote_unsealed && old.remote_needs_seal && old.remote_tokens.size() == 1 && old.remote_tokens[0] == std::string(64, 'd'));
+    // a save before the sealing (a setting changed at once) keeps them as they were
+    assert(old.save(file));
+    { Store mid; assert(mid.load(file) && mid.remote_needs_seal && mid.remote_tokens.size() == 1); }
+    old.seal_remote();
+    assert(!old.remote_needs_seal && old.remote_sealed.size() == 1);
+    assert(old.save(file));
+    const std::string text = read_file();
+    assert(text.find("\"tokens\"") == std::string::npos && text.find("\"credentials\"") != std::string::npos);
+    Store again;
+    assert(again.load(file) && again.unseal_remote() == 0 && again.remote_tokens.size() == 1 && again.remote_tokens[0] == std::string(64, 'd'));
+  }
+  // what cannot be read back (another account's DPAPI, a damaged entry, a duplicate) is dropped:
+  // that phone pairs again; the others are kept
+  {
+    Store e;
+    e.remote_sealed = {"dpapi:AAAA", "garbage", secret::seal(std::string(64, 'e')), secret::seal(std::string(64, 'e'))};
+    e.remote_unsealed = false;
+    assert(e.unseal_remote() == 3 && e.remote_tokens.size() == 1 && e.remote_sealed.size() == 1);
+  }
   std::filesystem::remove(file);
   std::filesystem::remove(file.string() + ".bak");
 }

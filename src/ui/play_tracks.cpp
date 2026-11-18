@@ -1,4 +1,4 @@
-// The subtitle list scrolls inside a bounded viewport; controls remain fixed.
+// The subtitle tracks and a film's chapters scroll inside a bounded viewport; controls remain fixed.
 #include "play.h"
 #include <algorithm>
 
@@ -11,24 +11,27 @@ void PlayView::layout_sub_list() {
     const Rect dock=dock_rect();
     const int top=in.fullscreen?0:chrome_room();
     const bool bar=dock.h>0&&(vis_.target>0||vis_.v>0);
-    int fixed=0;for(int i=0;i<(int)rows_.size();++i)if(rows_[i].id!=R_SUB_TRACK&&i>0)fixed+=rows_[i].k==RK::Separator?5:18;
+    int fixed=0;for(int i=0;i<(int)rows_.size();++i)if(rows_[i].id!=list_row()&&i>0)fixed+=rows_[i].k==RK::Separator?5:18;
     for(double sc=cc_scale_;sc>1;sc-=0.5) {
       const int room=(bar?std::max(dock.y-top,h_-dock.b()):h_-top)-(int)std::lround(12*sc);
-      if((24+4+fixed+2*18)*sc<=room) break;
+      if((24+(panel_==Panel::CC?5:4)+fixed+2*18)*sc<=room) break;
       cc_scale_=std::max(1.0,sc-0.5);
     }
   }
   double s=cc_scale_;
   int width=210;
-  for(const auto& row:rows_)if(row.id!=R_SUB_TRACK) {
+  for(const auto& row:rows_)if(row.id!=list_row()) {
     int padding=row.k==RK::Stepper?85:row.k==RK::Toggle?48:38;
     width=std::max(width,text_w(row.label,1)+padding);
   }
-  width=std::min({width,300,std::max(1,(int)(w_/s)-16)});pw_=std::lround(width*s);
+  // a chapter: its name, then where it starts (on the right, as the menus show a shortcut)
+  for(const auto& row:rows_)if(row.id==R_CHAPTER)width=std::max(width,text_w(row.label,1)+text_w(row.right,1)+50);
+  if(big_panel())width=big_width();  // (the one panel's width)
+  width=std::min({width,big_panel()?width:300,std::max(1,(int)(w_/s)-16)});pw_=std::lround(width*s);
   cc_first_=1;cc_count_=0;
-  for(int i=0;i<(int)rows_.size();++i)if(rows_[i].id==R_SUB_TRACK) {if(!cc_count_)cc_first_=i;++cc_count_;}
+  for(int i=0;i<(int)rows_.size();++i)if(rows_[i].id==list_row()) {if(!cc_count_)cc_first_=i;++cc_count_;}
   cc_row_h_=std::max(1,(int)std::lround(18*s));
-  double footer=4*s;
+  double footer=(panel_==Panel::CC?5:4)*s;  // (16/11: as much air under the last line as above the first)
   for(int i=cc_first_+cc_count_;i<(int)rows_.size();++i)footer+=(rows_[i].k==RK::Separator?5:18)*s;
   double header=24*s,natural=header+cc_count_*cc_row_h_+footer;
   Rect dock=dock_rect();
@@ -40,14 +43,15 @@ void PlayView::layout_sub_list() {
   if(!rows_.empty()) {rows_[0].r={2*s,4*s,pw_-4*s,20*s};rows_[0].parts.clear();}
   for(int i=0;i<cc_count_;++i) {
     auto& row=rows_[cc_first_+i];row.r={0,i*cc_row_h_,cc_viewport_.w,cc_row_h_};row.parts.clear();
-    row.display_label=fit_end(row.label,std::max(0,row.r.w-(int)(38*s)),s);
+    const int right=row.right.empty()?0:text_w(row.right,s)+(int)(10*s);
+    row.display_label=fit_end(row.label,std::max(0,row.r.w-(int)(38*s)-right),s);
   }
   double y=cc_viewport_.b();
   for(int i=cc_first_+cc_count_;i<(int)rows_.size();++i) {
     auto& row=rows_[i];int rh=row.k==RK::Separator?5:18;
     row.r={2*s,y,pw_-4*s,rh*s};row.parts.clear();
     if(row.k==RK::Stepper) {
-      int plus=row.r.r()-13*s;
+      int plus=row.r.r()-(int)std::lround(5*s)-(int)std::lround(7*s);  // (16/11: its plus ends with the switch and the arrows above)
       int minus=plus-3*s-text_w("+0.0s",s)-12*s;
       row.parts={{minus,y,9*s,row.r.h},{plus,y,9*s,row.r.h}};
     }
@@ -86,7 +90,8 @@ void PlayView::render_sub_list() {
     if(hover>0)cc_list_.cornered(box,s,p.hover,hover);
     if(row.checked)action_icon(cc_list_,"check",{3*s,box.y,12*s,box.h},s,row.enabled?p.fg:p.faint);
     text(cc_list_,row.display_label,23*s,box.y+(box.h-12*s)/2+s,s,
-         row.checked?(row.enabled?p.fg:p.dim):mix(row.enabled?p.dim:p.faint,p.fg,hover));
+         row.enabled?p.fg:p.faint);  // labels white, unavailable dark grey
+    if(!row.right.empty())text(cc_list_,row.right,box.r()-6*s-text_w(row.right,s),box.y+(box.h-12*s)/2+s,s,row.enabled?p.dim:p.faint);  // values grey
   }
   panel_base_.blit(cc_list_,cc_viewport_.x,cc_viewport_.y);
   if(cc_thumb_.h) {panel_base_.fill(cc_bar_,p.edge);panel_base_.fill(cc_thumb_,cc_drag_?p.fg:p.dim);}

@@ -21,7 +21,8 @@ int main() {
   const std::string s = ss.str();
   // minimized or restored: only the poll changes pace
   std::string size = body(s, "case WM_SIZE: {", "apply_window_corners();");
-  assert(size.find("T_POLL") != std::string::npos);
+  // (the poll's pace: core/poll_pace.h; 17/11: the light still going out keeps the full pace until it is gone)
+  assert(size.find("set_poll(iconic && !ambient_.leaving() ? poll_pace::kRest : poll_pace::kFast)") != std::string::npos);
   assert(size.find("vf") == std::string::npos && size.find("video-sync") == std::string::npos && size.find("update_music_idle") == std::string::npos);
   assert(s.find("@cueidle") == std::string::npos);
   // music never stops: the sound keeps a generous queue, and a window back from the taskbar at

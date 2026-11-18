@@ -10,7 +10,7 @@ void App::queue_refresh() {
   play_.next_notice("",now());
   play_.in.queue.clear();
   for(const auto& item:queue_.items())
-    play_.in.queue.push_back({item.id,file_name(item.path),item.id==queue_.current(),remote::is_audio_name(item.path)});
+    play_.in.queue.push_back({item.id,file_name(item.path),item.id==queue_.current(),audio_path(item.path)});
   play_.in.queue_revision=queue_.revision();
   play_.in.queue_active=queue_.active();
   find_next_episode();
@@ -34,12 +34,25 @@ size_t App::queue_add(const std::vector<std::string>& paths,bool replace) {
 
 // A file that is gone (deleted, moved, a drive unplugged) is skipped at once with a word about
 // it, and leaves the list: nothing waits on it.
+// (18b, 17/11: whether it is there is asked on a worker, ask_attributes. A disk slow to answer, an
+// external disk asleep or a share that dropped, froze the window for as long; now, after 150 ms,
+// the file opens as if it were there: one that is gone fails in the engine, which says so and
+// plays on, the same as a file that will not open. Half a second of answers at most per choice.)
 void App::queue_play_now(uint32_t id) {
+  const ULONGLONG asked_from=GetTickCount64();
   for(int guard=0;guard<(int)MediaQueue::kLimit;++guard) {
     const auto* item=queue_.get(id); if(!item)return;
     const std::string path=item->path;
     bool validated = path == remote_verified_path_; remote_verified_path_.clear();
-    if(validated||path.find("://")!=std::string::npos||GetFileAttributesW(widen(path).c_str())!=INVALID_FILE_ATTRIBUTES) {
+    bool there=validated||path.find("://")!=std::string::npos;
+    if(!there) {
+      const ULONGLONG spent=GetTickCount64()-asked_from;
+      std::vector<DWORD> attrs;
+      // (a few askers still waiting on a disk: no more of them, the engine answers)
+      there=spent>=500||attribute_askers_busy()||!ask_attributes({widen(path)},attrs,nullptr,(DWORD)std::min<ULONGLONG>(150,500-spent))||
+            (!attrs.empty()&&attrs[0]!=INVALID_FILE_ATTRIBUTES);
+    }
+    if(there) {
       queue_.select(id); open(path); queue_refresh(); return;
     }
     play_.toast(i18n::format(str::queue_skipped,{{"name",file_stem(path)}}),nullptr,now());
@@ -135,7 +148,7 @@ void App::queue_thumbnail_tick() {
   if(!queue_thumb_job_) {
     uint32_t id=play_.queue_thumbnail_request();
     if(const auto* item=queue_.get(id)) {
-      queue_thumb_job_=request_file_thumbnail(item->path,remote::is_audio_name(item->path));
+      queue_thumb_job_=request_file_thumbnail(item->path,audio_path(item->path));
       if(queue_thumb_job_)queue_thumb_id_=id;
     }
   }

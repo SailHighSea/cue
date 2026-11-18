@@ -1,13 +1,21 @@
 @echo off
 rem Build with MSVC. Run from "x64 Native Tools Command Prompt for VS".
+rem   build.bat            community build
+rem   build.bat official   GitHub edition (.tinypeep release)
+rem   build.bat store      Microsoft Store edition (then: python tools\make_msix.py ...)
 setlocal
+set CUEDEFS=
+if /i "%~1"=="official" set CUEDEFS=/DCUE_OFFICIAL_BUILD=1
+if /i "%~1"=="store" set CUEDEFS=/DCUE_OFFICIAL_BUILD=1 /DCUE_STORE_BUILD=1
+rem objects from another edition must not be reused
+if exist build\obj\*.obj del /q build\obj\*.obj
 if not exist build\obj mkdir build\obj
 if not exist build\Cue\fonts mkdir build\Cue\fonts
-rc /nologo /I res /fo build\obj\cue.res res\cue.rc || exit /b 1
-cl /nologo /std:c++20 /O2 /GL /Gy /Gw /EHsc /utf-8 /W4 /wd4100 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /DNOMINMAX ^
+rc /nologo %CUEDEFS% /I res /fo build\obj\cue.res res\cue.rc || exit /b 1
+cl /nologo %CUEDEFS% /std:c++20 /O2 /GL /Gy /Gw /EHsc /utf-8 /W4 /wd4100 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /DNOMINMAX ^
   /Fobuild\obj\ /Febuild\Cue\Cue.exe ^
   src\core\*.cpp src\ui\*.cpp src\win\*.cpp build\obj\cue.res ^
-  /link /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS /MANIFEST:NO dwmapi.lib ole32.lib shell32.lib uuid.lib shcore.lib user32.lib gdi32.lib advapi32.lib winmm.lib windowscodecs.lib winhttp.lib bcrypt.lib ws2_32.lib iphlpapi.lib || exit /b 1
+  /link /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS /MANIFEST:NO dwmapi.lib ole32.lib shell32.lib uuid.lib shcore.lib user32.lib gdi32.lib advapi32.lib winmm.lib windowscodecs.lib winhttp.lib bcrypt.lib ws2_32.lib iphlpapi.lib crypt32.lib || exit /b 1
 copy /y assets\fonts\*.ttf build\Cue\fonts\ >nul
 if not exist build\Cue\licenses mkdir build\Cue\licenses
 copy /y assets\fonts\*.txt build\Cue\licenses\ >nul

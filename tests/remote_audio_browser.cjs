@@ -33,9 +33,9 @@ const server = http.createServer((req,res) => {
     await page.addInitScript(audio => {
       localStorage.setItem('cue.token.v2','a'.repeat(64));
       window.WebSocket = class {
-        constructor(){ this.readyState = 0; setTimeout(() => { this.readyState = 1; this.onopen?.(); }, 5); }
+        constructor(){ this.readyState = 0; setTimeout(() => { this.readyState = 1; this.onopen?.();this.onmessage?.({data:'{"t":"chal","n":"0123456789abcdef0123456789abcdef"}'}); }, 5); }
         send(data){ const m = JSON.parse(data); setTimeout(() => { if (m.t === 'auth') {
-          this.onmessage?.({data:JSON.stringify({t:'hello',pc:'Cue PC'})});
+          this.onmessage?.({data:JSON.stringify({t:'hello',sid:'a1b2c3d4e5f60718',pc:'Cue PC'})});
           this.onmessage?.({data:JSON.stringify({t:'state',view:'play',file:audio?'song.flac':'Show S01E01.mkv',pos:150,dur:200,speed:1,vol:100,paused:false,ended:false,audioOnly:audio,
             sub:{has:false,on:false,delay:0,size:44,sizeMin:28,sizeMax:72,pos:93,posDefault:93,posMin:12,posMax:97},audio:{n:1,i:0},timer:{m:0,left:0},
             next:audio?'other song.flac':'Show S01E02.mkv',nextAuto:true,queueActive:true,color:'#a0508f',cover:audio?77:0,title:audio?'Night Swim':undefined,artist:audio?'tinypeep \u00b7 demo days':undefined})});
@@ -80,12 +80,18 @@ const server = http.createServer((req,res) => {
       await page.click('#bFwd'); await page.waitForFunction(() => (window.__sent || []).length > 0, null, {timeout: 2000}).catch(() => {}); await page.waitForTimeout(60);
       const sent = await page.evaluate(() => (window.__sent || []).map(m => m.c));
       assert.ok(sent.includes('next') && !sent.includes('skip'), 'music: the side button goes to the next song, not 15 s');
-      // the wheel's centre icon sits in the middle of the button
+      // the wheel's centre icon and its mode dots sit together in the middle of the button; music's
+      // icon is the note (a 7x7 drawing), and play/pause are as tall as the side buttons' arrows
       const centred = await page.evaluate(() => {
         const b = document.getElementById('bCenter').getBoundingClientRect(), i = document.getElementById('cIcon').getBoundingClientRect();
-        return [Math.abs((i.left + i.right) / 2 - (b.left + b.right) / 2), Math.abs((i.top + i.bottom) / 2 - (b.top + b.bottom) / 2), i.width];
+        const d = document.getElementById('modeDots').querySelector('i').getBoundingClientRect();
+        return [Math.abs((i.left + i.right) / 2 - (b.left + b.right) / 2), Math.abs((i.top + d.bottom) / 2 - (b.top + b.bottom) / 2), i.width, d.top - i.bottom];
       });
-      assert.ok(centred[2] > 0 && centred[0] <= 1 && centred[1] <= 1, 'the centre icon is centred: ' + centred);
+      assert.ok(centred[2] > 0 && centred[0] <= 1 && centred[1] <= 1 && Math.abs(centred[3] / (centred[2] / 28) - 8) < 0.1, 'the centre icon and its dots are centred: ' + centred);
+      const ib = await page.evaluate(() => { const g = document.getElementById('cIcon').getBBox(); return [g.width, g.height]; });
+      assert.ok(ib[0] === 7 && ib[1] === 7, 'music: the centre shows the 7x7 note: ' + ib);
+      const pp = await page.evaluate(() => { const p = document.getElementById('icoPlay').getBoundingClientRect(), r = document.getElementById('icoRew').getBoundingClientRect(); return [p.height, r.height]; });
+      assert.ok(Math.abs(pp[0] - pp[1]) < 0.01, 'play is as tall as rew: ' + pp);
       // up next: a song's cover arrives in a square picture
       await page.click('#bQueue');
       await page.waitForFunction(() => document.querySelector('#queueItems .q-row img.ok'));

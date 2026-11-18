@@ -7,8 +7,11 @@ namespace {
 constexpr int kAdd=-2,kFolder=-3,kClear=-4,kClose=-5,kScrollbar=-6;
 int slot_of(int control) { return -control-2; }  // footer/header controls -> hover slot 0..3
 // A pixel-dotted outline: the empty place a lifted row will land in.
+// (s is a whole pixel count: a list drawn under 1x, a short window at 100%, still steps 1 px;
+// at 0 the loops below never ended and Cue froze with the list open)
 void dotted(Canvas& c,const Rect& r,int s,Rgb colour,double alpha) {
   if(r.w<=0||r.h<=0||alpha<=0)return;
+  s=std::max(1,s);
   for(int x=r.x;x<r.r();x+=2*s) {c.fill(x,r.y,s,s,colour,alpha);c.fill(x,r.b()-s,s,s,colour,alpha);}
   for(int y=r.y+2*s;y<r.b()-s;y+=2*s) {c.fill(r.x,y,s,s,colour,alpha);c.fill(r.r()-s,y,s,s,colour,alpha);}
 }
@@ -462,14 +465,14 @@ void QueueView::draw_compact(Canvas& c,Item& item,int y,bool floating,bool pause
   std::string title,artist;
   split_artist_title(display_name(entry.name),title,artist);
   title=plain_title(title);
-  Rgb name_ink=entry.current||floating?p.fg:played?p.faint:mix(p.dim,p.fg,.25+ease_out(item.hover)*.55);
+  Rgb name_ink=played&&!entry.current&&!floating?p.dim:p.fg;  // names white (the ones already played, grey)
   const int ty=y+(int)std::lround(5*s);
   std::string t=fit_end(title,available,s);
   text(c,t,tx,ty,s,name_ink);
   // who, beside the title in the faint ink, when there is room for a few letters of it
   int aw=available-text_w(t,s)-(int)(6*s);
   if(!artist.empty()&&aw>=(int)(24*s))
-    text(c,fit_end(artist,aw,s),tx+text_w(t,s)+(int)(6*s),ty,s,entry.current?p.dim:p.faint);
+    text(c,fit_end(artist,aw,s),tx+text_w(t,s)+(int)(6*s),ty,s,p.dim);
   if(remove) {
     Rect x{row.r()-(int)(22*s),y+(int)(2*s),(int)(20*s),row.h-(int)(2*s)};
     c.bitmap(bmp("x-small"),x.cx()-2*s,x.cy()-2*s,s,p.dim,keyboard_&&item.hover<=0?1.:ease_out(item.hover));
@@ -497,11 +500,12 @@ void QueueView::draw_item(Canvas& c,Item& item,int y,bool floating,bool paused,i
   // titles move in next to it, otherwise they keep the column the films use.
   draw_picture(c,entry,cover_box(entry,y),played);
   int tx=(album_?62:88)*s,available=c.w-tx-34*s;
-  Rgb name_ink=entry.current||floating?p.fg:played?p.faint:mix(p.dim,p.fg,ease_out(item.hover)*.6);
+  Rgb name_ink=played&&!entry.current&&!floating?p.dim:p.fg;  // names white (the ones already played, grey)
   text(c,fit_middle(display_name(entry.name),std::max(0,available),s),tx,y+8*s,s,name_ink);
   std::string caption=entry.current?tr(str::queue_playing):next?tr(str::queue_up_next)
                      :items_.size()>1&&position>=0?std::to_string(position+1)+" / "+std::to_string(items_.size()):"";
-  text(c,fit_end(caption,std::max(0,available-12*(int)s),s),tx,y+25*s,s,entry.current||next?p.dim:p.faint);
+  text(c,fit_end(caption,std::max(0,available-12*(int)s),s),tx,y+25*s,s,p.dim);  // what it is: grey
+  (void)next;
   if(entry.current)action_icon(c,paused?"pause":"play",{tx+text_w(caption,s)+5*s,y+27*s,7*s,7*s},s,p.dim);
   Rect remove{c.w-29*s,y+10*s,20*s,24*s};
   if(!floating&&(item.hover>0||keyboard_))c.bitmap(bmp("x-small"),remove.cx()-2*s,remove.cy()-2*s,s,p.dim,ease_out(item.hover));
@@ -557,7 +561,7 @@ void QueueView::draw(Canvas& c,bool paused) {
   const auto& p=P();double s=s_;last_paused_=paused;
   if(frame_.w!=w_||frame_.h!=h_||frame_s_!=s) {
     frame_.resize(w_,h_);frame_.clear_transparent();frame_s_=s;
-    if(!bare_)draw_panel(frame_,0,0,w_/s,h_/s,s,{1},p.sheet,.97,p.edge,1);
+    if(!bare_)draw_panel(frame_,0,0,w_/s,h_/s,s,{2,1},p.bg,1,p.edge,1);  // the one panel: flat black, stepped corners
   }
   c.w=w_;c.h=h_;c.px=frame_.px;  // one copy; resize would zero it first
   if(bare_) {

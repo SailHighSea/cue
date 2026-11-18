@@ -9,15 +9,16 @@
 namespace {
 // Two zones: a quiet panel on the left where the eyes live, the content on the right
 // with generous margins. Art px; rows are spaced on a 4 px rhythm.
-constexpr int kPanel = 168;              // left panel width
-constexpr int kX0 = kPanel + 28;         // content column
-constexpr int kTitleY = 40, kVersionY = 70, kBodyY = 102, kButtonsY = SetupView::kH - 28 - 18;
+constexpr int kPanel = 144;              // left panel width
+constexpr int kM = 24;                   // margins: after the panel, right, bottom
+constexpr int kX0 = kPanel + kM;         // content column
+constexpr int kTitleY = 34, kVersionY = 61, kBodyY = 88, kButtonsY = SetupView::kH - kM - 18;
 }
 
 // The widest fixed text of the current language, in art px, as it sits in the content column.
 static int content_need() {
   auto w = [](str::Id id) { return text_w(tr(id), 1); };
-  int need = 168;  // the original column
+  int need = SetupView::kBaseW - kX0 - kM;  // the base column
   for (str::Id id : {str::setup_keep_prefs, str::setup_desktop, str::setup_launch}) need = std::max(need, w(id) + 13);
   for (str::Id id : {str::setup_remove_question, str::setup_frames_kept, str::setup_ready_update, str::setup_removed,
                      str::setup_prefs_kept, str::setup_bye, str::setup_installed, str::setup_updated, str::setup_start_menu,
@@ -41,10 +42,10 @@ int SetupView::art_w() {
   // measured once per language (the render asks every frame)
   static uint32_t rev = 0;
   static int w = kBaseW;
-  if (rev != i18n::revision()) { rev = i18n::revision(); w = std::clamp(kX0 + content_need() + 28, kBaseW, 600); }
+  if (rev != i18n::revision()) { rev = i18n::revision(); w = std::clamp(kX0 + content_need() + kM, kBaseW, 600); }
   return w;
 }
-static int content_w() { return SetupView::art_w() - kX0 - 28; }
+static int content_w() { return SetupView::art_w() - kX0 - kM; }
 
 void SetupView::set_size(int w_, int h_, double s_) {
   w = w_;
@@ -67,7 +68,7 @@ void SetupView::layout() {
   r_[kLaunch] = R(kX0 - 5, kBodyY + 20, kCW + 5, 15);
   r_[kKeep] = R(kX0 - 5, kBodyY + 22, kCW + 5, 15);
   r_[kDir] = R(kX0 - 5, kBodyY + 46, kCW + 5, 28);
-  face.layout(kPanel / 2.0 * s, (kH / 2.0 + 4) * s, s, 2.67);
+  face.layout(kPanel / 2.0 * s, (kH / 2.0 + 4) * s, s, 7.0 / 3);  // eye blocks of 7 art px
   face.max_look = 3.0 * face.scale / 1.5;
 }
 

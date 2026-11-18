@@ -1,10 +1,14 @@
 #pragma once
+#include <memory>
+#include <mutex>
 #include <windows.h>
 
 #include <array>
 #include <atomic>
 #include <climits>
 #include <filesystem>
+#include <functional>
+#include <unordered_map>
 #include <deque>
 #include <map>
 #include <set>
@@ -13,12 +17,15 @@
 
 #include "../core/store.h"
 #include "../core/glide_clock.h"
+#include "../core/light_flow.h"
 #include "../core/playback_warmup.h"
 #include "../core/preview_session.h"
 #include "../core/preview_dispatch.h"
 #include "../core/preview_timeline.h"
 #include "../core/overlay_buffers.h"
 #include "../core/frame_cache.h"
+#include "../core/colour_pace.h"
+#include "../core/poll_pace.h"
 #include "../core/episode_advance.h"
 #include "../core/queue.h"
 #include "../core/media_geometry.h"
@@ -41,10 +48,12 @@
 #include "vsync.h"
 #include "updater.h"
 #include "remote_server.h"
+#include "recent_thumbs.h"
 #include "file_thumbnail.h"
 #include "cover_image.h"
 #include "single_instance.h"
 #include "media_controls.h"
+#include "sound_parts.h"
 #include "../ui/music_light.h"
 #include "remote_scene.h"
 #include "taskbar_buttons.h"
@@ -56,16 +65,21 @@
 void cue_log_open(const std::filesystem::path& dir);
 void cue_log_flush(bool crashing = false);
 
+// a song, by its name; an .ogg only when its first pages hold no film (see app.cpp). Never reads
+// the disk on the caller's thread: until a worker has looked (waiting wait_ms at most), the name
+bool audio_path(const std::string& path, int wait_ms = 0);
+
 class App {
  public:
   void set_instance(SingleInstance* s) { instance_ = s; }  // released as soon as everything is saved, on leaving
   bool init(HINSTANCE inst, const std::vector<std::string>& args, int show);
   int run();
 
+  static void engine_waited(const char* what, const char* name, double ms);  // (19h: Mpv's synchronous calls, timed)
  private:
   enum class Mode { Home, Play };
-  enum : UINT { WM_APP_MPV = WM_APP + 1, WM_APP_ENGINE = WM_APP + 2, WM_APP_RECENTS = WM_APP + 3, WM_APP_THUMB = WM_APP + 4, WM_APP_MOUSE = WM_APP + 5, WM_APP_OPEN_FILES = WM_APP + 6, WM_APP_LEFT_DOWN = WM_APP + 7, WM_APP_LEFT_UP = WM_APP + 8, WM_APP_RIGHT_UP = WM_APP + 9, WM_APP_VSYNC = WM_APP + 10, WM_APP_UPDATE = WM_APP + 11, WM_APP_REMOTE = WM_APP + 12, WM_APP_QUEUE_CANCEL = WM_APP + 13, WM_APP_WHEEL = WM_APP + 14, WM_APP_MEDIA_BUTTON = WM_APP + 15 };
-  enum : UINT_PTR { T_ANIM = 1, T_POLL = 2, T_WAKE = 3, T_SAVE = 4, T_THUMB = 5, T_PERSIST = 6, T_GEOM = 7, T_PREVIEW = 8, T_FINE = 9, T_MAINTENANCE = 10, T_REMOTE = 11, T_REMOTE_START = 12, T_NEXT = 13, T_NEWS = 14, T_FOLDER = 15, T_QUEUE = 16, T_VOLUME = 17, T_REMOTE_PATH = 18, T_SEEK_FADE = 19 };
+  enum : UINT { WM_APP_MPV = WM_APP + 1, WM_APP_ENGINE = WM_APP + 2, WM_APP_RECENTS = WM_APP + 3, WM_APP_THUMB = WM_APP + 4, WM_APP_MOUSE = WM_APP + 5, WM_APP_OPEN_FILES = WM_APP + 6, WM_APP_LEFT_DOWN = WM_APP + 7, WM_APP_LEFT_UP = WM_APP + 8, WM_APP_RIGHT_UP = WM_APP + 9, WM_APP_VSYNC = WM_APP + 10, WM_APP_UPDATE = WM_APP + 11, WM_APP_REMOTE = WM_APP + 12, WM_APP_QUEUE_CANCEL = WM_APP + 13, WM_APP_WHEEL = WM_APP + 14, WM_APP_MEDIA_BUTTON = WM_APP + 15, WM_APP_HOME_THUMB = WM_APP + 16, WM_APP_SOUND_PARTS = WM_APP + 17, WM_APP_DISK_CHECK = WM_APP + 18, WM_APP_LAN = WM_APP + 19, WM_APP_OGG_KIND = WM_APP + 20, WM_APP_FILE_KINDS = WM_APP + 21 };
+  enum : UINT_PTR { T_ANIM = 1, T_POLL = 2, T_WAKE = 3, T_SAVE = 4, T_THUMB = 5, T_PERSIST = 6, T_GEOM = 7, T_PREVIEW = 8, T_FINE = 9, T_MAINTENANCE = 10, T_REMOTE = 11, T_REMOTE_START = 12, T_NEXT = 13, T_NEWS = 14, T_FOLDER = 15, T_QUEUE = 16, T_VOLUME = 17, T_REMOTE_PATH = 18, T_SEEK_FADE = 19, T_HOME_SHOT = 20, T_HELPER_REST = 21, T_LIST_HOLD = 22, T_PRELOAD = 23, T_SKIP_DIP = 24, T_SHAPE_WAIT = 25, T_SHELL_BATCH = 26, T_AUDIO_DEVICE = 27 };
 
   HINSTANCE inst_ = nullptr;
   HWND hwnd_ = nullptr, video_ = nullptr;
@@ -111,6 +125,10 @@ class App {
   std::string pending_open_;
   std::vector<std::string> launch_files_;
   int ext_subs_ = 0;
+  // an audio file asked for by "load audio track": it joins the film's tracks (unselected), and
+  // once the engine lists it, it is chosen the way a track picked in the menu is
+  std::string pending_audio_file_, pending_audio_film_;
+  std::vector<int64_t> pending_audio_known_;
   double last_time_ = 0;
   SeekDispatch seek_dispatch_;
   // After a seek the engine can still report the old time for a while (music rebuilds its picture
@@ -162,6 +180,9 @@ class App {
   bool music_cover_on_screen(const MusicView& v, double& x, double& y, double& side) const;
   FlightGhost ghost_;
   StageCover stage_cover_;  // black over the screen while full screen changes the window's size
+  GrowCover grow_cover_;    // black over the window while it grows with a black picture (see grow_cover_wanted)
+  double grow_cover_ready_at_ = -1;  // the glide landed and what is under the cover caught up
+  bool corners_round_ = false;       // Windows rounds this window's corners (11; not 10, not maximized)
   RECT client_screen() const;  // the client area on screen
   bool cloaked_ = false;
   void set_cloak(bool on);
@@ -184,6 +205,9 @@ class App {
   double mini_aspect() const;
   void set_pin(bool on);
   bool was_iconic_ = false;  // the last WM_SIZE minimized the window
+  // back from the taskbar, the light comes in once Windows has brought the window home (17/11)
+  static constexpr double kLightAfterRestore = 0.25;
+  double light_wait_until_ = 0;
   double click_activated_t_ = 0;  // when a mouse click last activated the window (0: not by a click)
   double play_interval_ = 1.0 / 60;  // overlay uploads: a divisor of the refresh rate, at most ~90 Hz
   void refresh_display_rate();
@@ -255,8 +279,29 @@ class App {
   bool covered() const;
   void set_hidden(bool h);
   bool hidden_now() const { return hidden_ || IsIconic(hwnd_); }
+  void sync_time_watch();
+  std::string remote_folder_name(const std::string& path);  // (19l) the shell's name, from a worker, kept
+  std::unordered_map<std::string, std::string> folder_names_;
+  std::set<std::string> folder_names_asked_;
+  bool time_watched_ = true, time_asked_ = false;  // (19f: the engine's clock followed, or asked for while hidden)
+  double time_asked_at_ = -1;
+  bool shape_wait_ = false;   // opened with Cue closed: out of sight until the film's shape is known
+  void end_shape_wait();
   void update_music_idle();  // a film under a full-screen window: frames timed by the sound
   bool poll_slow_ = false;    // minimized: the poll at 4 Hz
+  // the poll's pace (core/poll_pace.h): 30 a second while anything can change on screen, slower
+  // when nothing can; any input, animation or engine event brings it back at once
+  UINT poll_ms_ = 0;
+  POINT poll_cursor_{INT_MIN, INT_MIN};
+  double pointer_moved_at_ = 0;
+  bool atmo_moving_ = false;
+  std::vector<uint32_t> home_reach_old_;  // the eyes' corner before it is drawn again (what changed goes to Windows)
+  uint64_t home_key_ = 0;  // the home's last whole frame (HomeView::eyes_only_key): later frames may redraw only the eyes  // the room's light or the accent still gliding to new colours
+  void set_poll(UINT ms);
+  void poll_fast();
+  bool under_active_window() const;  // the home entirely covered by the window in front
+  UINT play_pace(bool hidden) const;
+  void fit_fullscreen();  // full screen fits its monitor again (resolution, scale, monitors changed)
   bool film_idle_ = false;    // a film under a full-screen window: video-sync=audio
   // a song opened again (a new look): its sound fades out and back in through the engine's own
   // gain (volume-gain, dB), never the person's volume, so the reopen is a breath, not a cut
@@ -287,7 +332,19 @@ class App {
   void on_end_file(const mpv_event_end_file* e);
 
   void open(std::string path, std::vector<std::string> subs = {});
-  void handle_files(const std::vector<std::string>& files);
+  // which of these paths are folders, without the window's thread touching the disk (see app.cpp)
+  bool ask_attributes(const std::vector<std::wstring>& paths, std::vector<DWORD>& attrs,
+                      std::function<void(const std::vector<DWORD>&)> late, DWORD wait_ms = 150);
+  static bool attribute_askers_busy();  // four or more still waiting on a disk
+  bool folder_kinds(const std::vector<std::string>& files, std::vector<char>& dirs, std::function<void(const std::vector<char>&)> then);
+  // Explorer's hand-overs waiting: which are folders (asked once each), and an answer on its way
+  std::unordered_map<std::wstring, char> launch_kinds_;
+  bool pending_from_args_ = false;  // pending_open_ is what Cue was started with (a folder or a file, not yet known)
+  bool launch_asking_ = false, launch_started_ = true;  // (started: this choice's first file was dealt with)
+  uint64_t launch_ask_choice_ = 0;
+  uint64_t open_choice_ = 0;  // the person's choices of what to open (a late answer for an older one is let go)
+  void handle_files(const std::vector<std::string>& files, bool shell = false);  // shell: opened from Explorer ("open with", a double click): played now, never only listed
+  void open_kinds(const std::vector<std::string>& files, const std::vector<char>& dirs, bool shell);
   MediaQueue queue_;
   void queue_refresh();
   void queue_clear();
@@ -314,6 +371,14 @@ class App {
   void queue_folder(const std::string& path, bool replace, bool remote = false);
   void finish_folder();
   void go_home();
+  void home_restore_place();
+  void glide_home();
+  bool grow_cover_wanted() const;
+  void grow_cover_follow(const RECT& window);
+  void step_grow_cover(double t);
+  bool home_glide_pending_ = false;  // back home: the glide waits for the engine's window to go (try_hide_video)
+  VideoShape last_shape_{};  // the last file's measure from the engine (see video_geometry_reply)
+  int black_w_ = -1, black_h_ = -1;  // the size the black canvas was last painted at, while the home waits to enter
   void refresh_recents(bool check = true);
   void resolve_props();
   // timeline previews
@@ -345,6 +410,49 @@ class App {
   unsigned recents_gen_ = 0;
   std::set<std::wstring> missing_;
   std::vector<std::string> shown_paths_;
+  // the home list's pictures (see recent_thumbs.h): a film's frame is taken where it is left
+  // (paused, closed, another file, and with the 5-minute save), in memory, written on a worker
+  RecentThumbs recent_thumbs_;
+  void on_home_thumb(RecentThumbResult* r);
+  void film_left();  // a film was closed or replaced: its picture is taken again on the home
+  std::vector<RecentThumbs::Want> home_pictures_;  // the shown entries' pictures still to read
+  std::set<std::string> list_waits_for_;  // at the start: the shown entries whose pictures the list waits for
+  bool engine_after_list_ = false;         // at the start: the engine loads once the list is in
+  void release_engine();
+  void want_home_pictures();  // asked only with the home on screen and no file on its way
+  // The pictures Cue makes itself (a film's frame where it was left, a cover only the engine can
+  // read): the timeline's own helper (already running after a film: no second process, nothing
+  // to start), small frames at a keyframe, below normal priority, one file at a time, only on the
+  // home, and given back to the player as soon as a file opens. Nothing is ever taken from the
+  // engine that plays. The film just left goes first and at once; the others wait a moment.
+  static constexpr uint32_t kHomeShotSessions = 0x80000000u;  // (never one of the player's)
+  static constexpr double kListHold = 0.2;    // s the list may wait at the start for the pictures on disk
+  static constexpr UINT kHelperRest = 60000;  // ms the preview helper may idle on the home before it goes
+  struct HomeShot { std::string path; bool audio = false; bool now = false; };
+  std::deque<HomeShot> home_shot_queue_;
+  std::set<std::string> home_shot_tried_;  // normalized paths tried this session (a picture or none)
+  HomeShot home_shot_now_;
+  uint32_t home_shot_session_ = 0, home_shot_id_ = 0;
+  bool home_shot_retried_ = false;  // no picture where it was asked: its start is tried once
+  bool home_shot_busy_ = false;
+  // the home's "configurações": the player's Settings panel drawn over the home (see draw_home_settings)
+  bool home_settings_ = false;
+  void open_home_settings();
+  void draw_home_settings(Canvas& c);
+  bool home_settings_input() const { return home_settings_ && play_.over_home(); }
+  bool home_shot_checking_ = false;  // a worker is asking the disk whether home_shot_now_ is there
+  unsigned home_shot_check_seq_ = 0;
+  std::unique_ptr<AsyncWorker> disk_checks_;
+  void on_home_shot_check(unsigned seq, bool reachable);
+  void begin_home_shot();
+  bool home_started_helper_ = false;  // the helper was started for the home (it goes when done)
+  double home_shot_asked_at_ = 0;
+  double home_shown_at_ = -100;  // when the home last came in (the helper waits a moment after it)
+  double home_shot_held_from_ = 0;  // when a waiting picture started to wait for the pointer to leave an entry
+  void want_home_shot(const std::string& path, bool audio, bool now = false);
+  void next_home_shot();
+  void on_home_shot(ThumbMsg* m);
+  void stop_home_shots();
   std::string observed_path_;
   bool has_background_box_ = false;
   void save_state();   // debounced: sliders and drags do not write on every step
@@ -354,6 +462,15 @@ class App {
   void apply_media_tracks();
   void save_frame(bool with_subs);
   std::wstring last_frame_;  // the frame saved last, for the toast's folder button
+  // frames being saved (18c): the engine writes each to a file in the temporary folder at once (the
+  // frame on screen), a worker puts it in Pictures\Cue (a disk that may take seconds: OneDrive,
+  // an external or network folder); the toast comes when it is there
+  struct FrameShot { uint64_t request = 0; std::wstring temp, pictures, name; };
+  std::deque<FrameShot> frame_shots_;
+  uint64_t frame_shot_request_ = 1ull << 45;
+  bool frame_written(uint64_t request, bool ok);
+  void place_frame_shot(FrameShot shot);
+  void finish_frame_shots();  // (closing: the frames still on their way, a moment for them)
   bool eof_ = false;         // paused on the last frame (play starts over)
   void set_ui_scale(int v);
   void apply_language(bool relayout);  // resolve and apply the interface language
@@ -372,10 +489,31 @@ class App {
   void say(const std::string& text);  // a short message wherever the person is (home or player)
   // the film's atmosphere: sampled from the preview engine (never the playback one)
   Ambient ambient_;
-  ColorSmoother accent_sm_, zone_sm_[FrameColors::kZones];
+  ColorSmoother accent_sm_;
+  LightBreath zone_sm_[FrameColors::kZones];    // the halo's zones, each a breath (17/11)
+  LightFlow light_flow_;                        // ... heading for colours that flow between samples (17/11)
+  double light_every_ = 1.5;                    // film seconds until the next colour sample (LightFlow)
+  double zone_tau_ = 0.225;                     // the breath's pace for its last colours (LightTiming)
+  FrameColors light_pending_{};                  // colours asked ahead, waiting for the film to get there
+  double light_pending_t_ = -1;
+  bool light_pending_on_ = false;
+  double sub_dim_ = 1;
+  // a song's opening waits (a moment, never the window) for its cover's read: the engine holds
+  // the file at its preload hook while the window goes on drawing (see preload_step)
+  uint64_t preload_hook_ = 0;
+  bool preload_waiting_ = false;
+  ULONGLONG preload_until_ = 0, preload_from_ = 0;
+  void preload_step(bool give_up);
+  // the first seconds of a song's opening, timed message by message (cue.log; see watch_song_open)
+  double song_watch_until_ = -1, song_slowest_ = 0;
+  int song_slowest_at_ = 0;
+  std::string song_slowest_what_;
+  void watch_song_open(UINT m, WPARAM w, double t0);
+  void set_home_covers(bool on);  // the subtitle's colours under a panel (PlayView::wanted_subtitle_dim)
   Rgb accent_target_{255, 255, 255}, zone_target_[FrameColors::kZones]{};
   double accent_k_target_ = 0, zone_light_target_[FrameColors::kZones]{};
   double accent_want_ = -1, accent_req_t_ = -10;
+  ColourPace colour_pace_;  // the colours' interval follows what a sample costs this film (core/colour_pace.h)
   double accent_media_t_ = -1;
   bool thumb_for_accent_ = false;
   // music's light show: the engine's loudness for each audio frame (an astats filter on the
@@ -466,6 +604,24 @@ class App {
   bool step_music_light(double dt);
   // the lock screen's and the volume flyout's media card (Windows' media controls)
   MediaControls media_controls_;
+  // "Skip intro": the parts from the chapters' names, and for an episode without them, from its
+  // sound, compared with another episode of the show (sound_parts.h)
+  SoundFinder sound_finder_;
+  std::vector<SkipPart> sound_parts_;
+  int sound_state_ = 0;  // 0 not looked at yet, 1 waiting to ask, 2 done, 3 being looked up (look_up)
+  double sound_due_ = -1;
+  int sound_tries_ = 0;
+  void refresh_skip_parts();
+  // the skip's passage: picture and sound dim out (0.16 s), the jump, then back (0.24 s) once the
+  // engine plays again. Only the engine's own brightness and gain move: nothing is drawn.
+  int dip_stage_ = 0;  // 1 out, 2 waiting for the new place, 3 in
+  double dip_t0_ = 0, dip_to_ = 0;
+  void skip_to(double t);
+  void step_dip(double t);
+  void end_dip();
+  void sound_looked_up(const SoundFinder::LookUp& r);
+  void sound_tick();
+  std::string sound_partner();
   bool media_attached_ = false;
   std::string media_key_;        // file whose card words were parsed
   bool media_words_audio_ = false;
@@ -481,8 +637,15 @@ class App {
   bool background_ready(double delay = PlaybackWarmup::kDelay) const;
   bool atmosphere_ready() const;
   void reset_atmosphere(bool keep_music_light = false);
-  void sample_atmosphere(const std::vector<uint32_t>& px, int w, int h);
+  void sample_atmosphere(const std::vector<uint32_t>& px, int w, int h, double sample_t = -1);
+  void light_pending_check();
+  void apply_frame_colours(const FrameColors& fc);
   bool step_atmosphere(double dt);
+  // the welcome's second screen: the window's halo in its little scene's colours (and its fade
+  // out afterwards, on the home); true while it moves
+  bool step_welcome_light(double dt);
+  bool welcome_lit_ = false;  // the halo is the welcome's (until it has faded)
+  void welcome_size();  // the welcome laid out for the window, with each interface size's scale in it
   double atmo_t_ = 0;
   // the window follows the content: portrait video -> portrait window, landscape -> landscape
   int64_t vid_w_ = 0, vid_h_ = 0, vid_rot_ = 0;
@@ -492,6 +655,27 @@ class App {
   void request_video_geometry();
   void video_geometry_reply(const mpv_event* event);
   bool open_timed_ = false;     // the song's opening time logged
+  // a song's artist, for the home's list: asked without waiting (a read that waited for the engine
+  // held the window while the engine opened the sound, 70 ms at times)
+  uint64_t artist_request_ = 1ull << 40;
+  std::string artist_path_;
+  bool song_audio_seen_ = false, song_cover_seen_ = false;
+  // the "video ..." line of cue.log: its codec and pixel format asked for, not waited for (four reads
+  // that waited for the engine held the window 40-60 ms as a song opened)
+  uint64_t hw_log_request_ = 1ull << 41;
+  // --log: where the engine puts the picture in the window during a transition (osd-dimensions'
+  // margins: above 0, black between the picture and the window's edge)
+  uint64_t rect_log_request_ = 1ull << 42;
+  // the codecs the engine can decode (its decoder-list, read once): a track it cannot decode (an
+  // iPhone's spatial sound, Apple Positional Audio) is never put in a mix of tracks, which would
+  // keep the whole file from opening
+  static constexpr uint64_t kReplyDecoders = (1ull << 43) + 1;
+  std::vector<std::string> decoders_;
+  bool can_decode(const Track& t) const;
+  std::string rect_log_what_;
+  void trace_video_rect(const char* what);
+  int hw_log_parts_ = 0;
+  std::string hw_codec_, hw_profile_, hw_pix_;  // (cue.log: a song's opening, step by step)
   VideoShape early_shape_{};  // the film's shape from its file, before its first picture (0: unknown)
   bool geom_done_ = true;          // this file's adaptation already happened (or is not wanted)
   bool user_sized_ = false;        // the person resized during this media: respect it
@@ -510,6 +694,7 @@ class App {
   struct FullscreenZoom {
     bool entering = true, animate = true;
     double t0 = 0, ready_at = -1, video_ar = 16.0/9.0;
+    bool rect_mid = false;
     RECT monitor{}, from{}, to{};  // screen coordinates
   } fz_;
   // fullscreen snap: uniforms of the video shader (see step_fullscreen_transition)
@@ -544,6 +729,11 @@ class App {
   bool logged_hw_ = false;
   double hw_log_t_ = 0;
   void adapt_window(double ar);
+  RECT film_window_rect(double ar) const;
+  RECT home_default_rect() const;
+  bool shell_batch_more_ = false, shell_batch_listed_ = false, shell_batch_cold_ = false;
+  static constexpr double kShellBatchGap = 0.6, kShellBatchCold = 1.5;  // (s) one Explorer selection's hand-overs
+  double shell_batch_t_ = -10;  // when Explorer last handed files over (a selection opened at once arrives one by one)
   void animate_window_to(const RECT& r);
   void step_geom(double t);
   RECT window_rect() const;
@@ -568,6 +758,9 @@ class App {
   void release_video_window();
   void try_hide_video();
   void shutdown_engine(DWORD max_ms);
+  void step_light_out();
+  void fine_clock_for_light();  // the halo's last frames on the way out of the Cue
+  double light_out_t_ = 0;
   void quit_now();
   bool closing_video_ = false, hide_video_pending_ = false, closing_app_ = false;
   double hide_video_since_ = 0;
@@ -632,6 +825,9 @@ class App {
     std::string source;
     uint64_t epoch = 0, open_epoch = 0, add_epoch = 0;
     bool allowed = false;
+    // the PC chose this file (an item of its queue, or the next episode it found): the phone
+    // only picks it, so it plays from any folder; the shared folders guard what the phone opens
+    bool from_pc = false;
     std::atomic<bool> done{false}, cancelled{false};
   };
   std::unique_ptr<AsyncWorker> remote_path_worker_;
@@ -649,7 +845,11 @@ class App {
   bool amix_ = false;
   void set_audio_mix(std::vector<int64_t> ids, bool remember);
   std::vector<int64_t> all_audio_ids() const;
+  void apply_chapters();
+  std::vector<Chapter> chapters_all_;  // the engine's list for this file (shown only when Settings allow)
   void select_audio(int64_t id);
+  void add_audio_file();
+  void adopt_added_audio();
   bool change_audio_graph(const std::string& graph, int64_t single_track);
   struct AudioSwitch {
     int stage = 0, retries = 0;
@@ -669,6 +869,13 @@ class App {
   void set_subtitle_visibility(bool visible);
   void refresh_subtitles();
   int64_t aid_reselect_ = 0;  // a track being chosen again after a mix (its passing "no" is ignored)
+  // the sound device (16/11): the engine's output in use ("" none), the track that last played,
+  // whether the output was lost while a file played, and the tries since
+  std::string ao_;
+  int64_t audio_want_ = 0;
+  bool audio_lost_ = false, audio_devices_seen_ = false;
+  int audio_tries_ = 0;
+  void recover_audio();
   void clear_audio_mix();
   void pick_subs_only(const RecentItem* r);
   int size_wheel_ = 0;  // ctrl + wheel, summed until a notch
@@ -698,5 +905,20 @@ class App {
   void mouse_button(int which, bool down, int x, int y);  // coordinates at the event, in Play mode
   POINT cursor_client() const;
   void log(const std::string& msg);
+  double seek_goal_ = -1;     // where the arrows' last step was asked to land (see seek_landed)
+  int seek_goal_tries_ = 0;
+  uint32_t seek_serial_ = 0;
+  Rgb strip_light_{0, 0, 0};
+  static constexpr double kLightPushInterval = 1.0 / 30;  // the music light's pace to the engine
+  double light_push_t_ = -10;
+  // this PC's address on the network, looked up on a worker (Windows' list of adapters can take a
+  // good part of a second): the remote control's scene opens on the last one found, and the
+  // worker's answer corrects it (15/11: opening the remote made the window hitch)
+  struct LanLookup { std::mutex mu; std::string ip; bool busy = false, known = false; };
+  std::shared_ptr<LanLookup> lan_ = std::make_shared<LanLookup>();
+  void lan_refresh();
+  std::string lan_now();  // the strip's room light at its picture's right edge (see update_blur_cloud)
+  double seek_offset_ = 0;    // this file's hr-seek-demuxer-offset (s); 0: the engine's default
+  void seek_landed();
   void trace(const std::string& msg);  // a routine step: written only with --log
 };

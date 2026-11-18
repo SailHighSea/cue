@@ -5,105 +5,22 @@
 
 #include "../core/i18n.h"
 #include "../core/ui_scale.h"
+#include "light.h"
 
 namespace {
 const str::Id kSizeNames[kUiSizes] = {str::size_small, str::size_medium, str::size_large, str::size_larger};
+const str::Id kTitles[3] = {str::ob_intro, str::ob_ambient_title, str::ob_size_title};
+const str::Id kLines[3] = {str::ob_intro_line, str::ob_ambient_line, str::ob_size_line};
 
-// What is coming, ripening like the popcorn of the first screen.
-struct Upcoming { str::Id title, tag, line; int icon; };
-const Upcoming kUpcoming[3] = {
-    {str::ob_up1_title, str::ob_up1_tag, str::ob_up1_line, 0},
-    {str::ob_up2_title, str::ob_up2_tag, str::ob_up2_line, 1},
-    {str::ob_up3_title, str::ob_up3_tag, str::ob_up3_line, 2},
-};
-constexpr int kItemTextW = 300;  // art px for the words of a row
-constexpr int kIconGap = 14;     // between the icon and the words
-constexpr int kTitleH = 18, kLineH = 12, kRowGap = 14;  // title line (with its tag), description lines
-// physical px per icon cell: 1.5 art px, whole pixels
-inline int icon_cell(double s) { return std::max(1, (int)std::lround(1.5 * s)); }
-constexpr int kIconCols = 18, kIconRows = 14;
-// Icons, 18 x 14 cells: '#' the drawing, digits light up in turn (signal), 'p' the phone's
-// screen glyph, 'c' a blinking cursor.
-const char* kIcons[3][kIconRows] = {
-    {  // a phone sending a signal
-        "..#######.........",
-        ".#.......#........",
-        ".#.......#.....3..",
-        ".#.......#......3.",
-        ".#.......#...2...3",
-        ".#.......#....2..3",
-        ".#.......#.1..2..3",
-        ".#.......#..1.2..3",
-        ".#.......#.1..2..3",
-        ".#.......#....2..3",
-        ".#.......#...2...3",
-        ".#...#...#......3.",
-        ".#.......#.....3..",
-        "..#######.........",
-    },
-    {  // a screen being cast to
-        "..................",
-        "..................",
-        "##############....",
-        "#............#....",
-        "#............#....",
-        "#............#....",
-        ".............#....",
-        "333..........#....",
-        "...3.........#....",
-        "22..3........#....",
-        "..2.3........#....",
-        "1.2.3.########....",
-        "....######........",
-        "..................",
-    },
-    {  // a laptop with a prompt
-        "..................",
-        "..................",
-        "..############....",
-        "..#..........#....",
-        "..#.#........#....",
-        "..#..#.......#....",
-        "..#.#.cc.....#....",
-        "..#..........#....",
-        "..#..........#....",
-        "..############....",
-        "################..",
-        ".##############...",
-        "..................",
-        "..................",
-    },
-};
+constexpr double kIntroType = 0.7, kCharDur = 0.045;
+constexpr double kFootIn = 0.55;   // the footer comes in with the eyes, not after the greeting
+constexpr double kScaleFade = 0.18;  // the controls crossfade from one size to the next
+constexpr double kMoodDur = 5.0;   // the scene drifts through three film moods, slowly
+constexpr double kSceneFps = 12;   // the little scene is a film at 12 pictures a second
+constexpr int kDockW = 200, kDockH = 38, kDockAir = 8;  // the controls' sample, art px (at its own pixel)
 
-constexpr double kGravity = 64;   // popcorn, bucket cells per second squared
-constexpr double kIntroType = 1.25, kCharDur = 0.055;
-constexpr int kBucketW = 17, kBucketH = 19;
-
-// The bucket, 17 x 19 cells: popcorn heap (rows 0-4), rim (5), striped body (6-18).
-// '#' kernel, '+' kernel shade, 'R' rim, 'a'/'b' alternating stripes.
-const char* kBucket[kBucketH] = {
-    "......##...#.....",
-    "...##.###.###....",
-    "..#####+##+####..",
-    ".###+######+####.",
-    "#####+##########+",
-    "RRRRRRRRRRRRRRRRR",
-    ".aaabbbaaabbbaaa.",
-    ".aaabbbaaabbbaaa.",
-    ".aaabbbaaabbbaaa.",
-    "..aabbbaaabbbaa..",
-    "..aabbbaaabbbaa..",
-    "..aabbbaaabbbaa..",
-    "..aabbbaaabbbaa..",
-    "...abbbaaabbba...",
-    "...abbbaaabbba...",
-    "...abbbaaabbba...",
-    "...abbbaaabbba...",
-    "....bbbaaabbb....",
-    "....bbbaaabbb....",
-};
-// Two kernel poses, 3 x 3, so a flying kernel tumbles.
-const char* kKernel[2] = {".#.###.#.", "##.###.##"};
+// the light behind the eyes: cool on one side, warm on the other
+constexpr Rgb kCool = kEyeCool, kMid = kEyeMid, kWarm = kEyeWarm;
 
 int cps(const std::string& s) {
   int n = 0;
@@ -136,18 +53,41 @@ static std::vector<std::string> wrap_balanced(const std::string& t, int max_w, d
 }
 
 // ── layout ──────────────────────────────────────────────────────────
+int OnboardingView::scale_index() const { return ui_size_index(ui_scale); }
+
+// The interface scale of each size in this window: the App's, or (previews, tests) the chosen
+// one's in proportion (0.5, 0.75, 1, 1.25), on half px, each a step above the one before.
+void OnboardingView::sizes() {
+  static const double mult[kUiSizes] = {0.5, 0.75, 1.0, 1.25};
+  const int cur = std::clamp(scale_index(), 0, kUiSizes - 1);
+  for (int i = 0; i < kUiSizes; ++i) {
+    double v = size_s[i] > 0 ? size_s[i] : std::max(1.0, std::round(ui_s * mult[i] / mult[cur] * 2) / 2);
+    if (i > 0) v = std::max(v, eff_s_[i - 1] + 0.5);
+    eff_s_[i] = v;
+  }
+}
+
 void OnboardingView::set_size(int w_, int h_, double s_) {
   if (w_ <= 0 || h_ <= 0) return;  // minimized or not created yet: keep the last layout
   bool first = w == 0;
   w = w_;
   h = h_;
   ui_s = std::max(1.0, s_);
-  // A first impression reads at a comfortable size, close to the chosen interface size:
-  // about 720 x 405 px of art fill the window, never more than 1.5x the interface scale.
-  // The control sample shows the real size.
-  double fit = std::floor(std::min(w / 720.0, h / 405.0) * 2) / 2;
-  s = std::max(ui_s, std::min(std::max(1.0, fit), ui_s * 1.5));
   chrome.s = ui_s;  // the window buttons stay exactly where the home has them
+  sizes();
+  // The welcome's pixel: a step above the home's (a quarter more, on the half-pixel grid: it is a
+  // first impression, read from further away than a list), never more than the window holds
+  // comfortably, never less than the home's. With the picture at a fixed size of art, every
+  // window shows the same composition, only at its own pixel: nothing is ever just "smaller".
+  // Made for the window, not for the size chosen on the third screen: choosing one changes the
+  // controls, not the screen around them.
+  if (first || w != page_s_w_ || h != page_s_h_) {
+    page_s_w_ = w; page_s_h_ = h;
+    const double base = std::max(1.0, eff_s_[1]);
+    const double want = std::round(base * 1.25 * 2) / 2;
+    const double room = std::floor(std::min(w / 640.0, h / 400.0) * 2) / 2;  // the composition is ~600 x 380 art
+    s = std::max(base, std::min(want, room));
+  }
   layout();
   // a small window at a large size (or longer words): rather a half step smaller than words
   // under the footer
@@ -156,157 +96,157 @@ void OnboardingView::set_size(int w_, int h_, double s_) {
   place_face(0, !face_placed_);
 }
 
-int OnboardingView::scale_index() const { return ui_size_index(ui_scale); }
-
 void OnboardingView::layout() {
   if (w <= 0 || h <= 0) return;
   const double W = w / s, H = h / s;
-  const double CW = std::min(W - 32, 560.0), ox = (W - CW) / 2;
-  const double top = 24, foot_y = H - 14 - 16, bottom = foot_y - 10, AH = bottom - top;
+  const double CW = std::max(40.0, std::min(W - 32, 560.0)), ox = (W - CW) / 2;
+  // the footer stands with the content (under it, on the picture's edges), not at the window's
+  // far corners: in a big window the buttons were small marks a long way from what they move on
+  const double top = 26, bottom = H - 14;
+  constexpr double kBtnH = 18, kFootGap = 30;  // (the plate: the installer's and the menus' rows, 18 px)
   auto R = [&](double x, double y, double ww, double hh) { return Rect(x * s, y * s, ww * s, hh * s); };
 
-  // footer: secondary on the left, page dots in the middle, primary on the right
+  // the words: a heading, its line (as many rows as the longest of the three needs) and a control
+  line_rows_ = 1;
+  for (auto id : kLines) line_rows_ = std::max<int>(line_rows_, (int)wrap_text(tr(id), (int)(CW * 0.86 * s), s).size());
+  line_rows_ = std::min(line_rows_, 3);
+  const double words_h = 24 + 4 + 13.0 * line_rows_ + 14 + 16 + kFootGap + kBtnH;
+  const double gap = 22, avail = bottom - top;
+
+  // the picture: wide enough for the controls at the largest size, at their own pixel, when the
+  // window allows (otherwise all four sizes shrink by the same ratio)
+  const double big = eff_s_[kUiSizes - 1];
+  // (one size of art: the same composition in every window; the controls step down inside it
+  // when the largest size would not fit, see ctrl_s_)
+  double bw = std::min(320.0, std::max(120.0, CW * 0.86));
+  double bh = std::round(bw * 9 / 16);
+  overflow_ = false;
+  if (bh + gap + words_h > avail) {
+    bh = std::floor(avail - gap - words_h);
+    if (bh < 54) { overflow_ = true; bh = std::max(40.0, bh); }
+    bw = std::round(bh * 16 / 9);
+  }
+  bw = std::round(bw);
+  const double by = top + std::max(0.0, (avail - (bh + gap + words_h)) / 2);
+  box_ = R(std::round(W / 2 - bw / 2), std::round(by), bw, bh);
+
+  // the controls' pixel at each size: their real one; when the largest does not fit the picture,
+  // all four step down together (the same half-px steps apart as in the player), and only the
+  // smallest windows let the smallest sizes meet at 1
+  const double room = std::max(1.0, std::floor((box_.w + 1) / (double)(kDockW + 2 * kDockAir) * 2) / 2);
+  const double down = std::max(0.0, big - room);
+  for (int i = 0; i < kUiSizes; ++i) ctrl_s_[i] = std::max(1.0, eff_s_[i] - down);
+
+  const double ty = by + bh + gap;
+  // the footer: the way back (a word) on the picture's left edge, the page markers in the middle,
+  // the way on (a plate, the one strong shape here) ending on its right edge
+  {
+    const double fy = ty + 28 + 13.0 * line_rows_ + 14 + 16 + kFootGap;
+    double nw_max = 0, back_max = 0;
+    for (int p = 0; p < kPages; ++p) {
+      nw_max = std::max(nw_max, text_w(tr(p == kPages - 1 ? str::ob_start : str::ob_continue), 1) + 9.0 + 28);
+      back_max = std::max(back_max, text_w(tr(p == 0 ? str::ob_skip : str::ob_back), 1) + 16.0);
+    }
+    const double dots_w = kPages * 14 + (kPages - 1) * 2;
+    // (one width for "continuar" and "começar": a target that never shrinks; less where the
+    // window is narrow)
+    // (the markers stay in the middle: each side holds the wider of the two buttons)
+    auto need_for = [&](double nw) { return dots_w + 2 * 12 + 2 * std::max(back_max - 8, nw); };
+    if (need_for(std::max(nw_max, 96.0)) <= CW) nw_max = std::max(nw_max, 96.0);
+    // on the picture's edges, or wider when the three do not fit between them (a narrow window, long
+    // words): then centred, as wide as they need
+    const double need = need_for(nw_max);
+    const double span = std::min(CW, std::max(bw, need));
+    const double fx0 = std::round(W / 2 - span / 2), fx1 = fx0 + span;
+    for (int p = 0; p < kPages; ++p) {
+      Lay& L = L_[p];
+      L.next = R(fx1 - nw_max, fy, nw_max, kBtnH);
+      const double bw2 = text_w(tr(p == 0 ? str::ob_skip : str::ob_back), 1) + 16;
+      L.back = R(fx0 - 8, fy, bw2, kBtnH);  // (its word starts on the picture's edge; its hover plate reaches out)
+      L.dots.clear();
+      const double dx = W / 2 - (kPages * 14 + (kPages - 1) * 2) / 2.0;
+      for (int i = 0; i < kPages; ++i) L.dots.push_back(R(dx + i * 16, fy + (kBtnH - 10) / 2, 14, 10));
+    }
+  }
+  title_y_ = (int)std::lround(ty * s);
+  line_y_ = (int)std::lround((ty + 28) * s);
+  const double cy = ty + 28 + 13.0 * line_rows_ + 14;
+  ctrl_y_ = (int)std::lround(cy * s);
   for (int p = 0; p < kPages; ++p) {
-    Lay& L = L_[p];
-    std::string nl = tr(p == kPages - 1 ? str::ob_start : str::ob_continue);
-    double nw = text_w(nl, 1) + 9 + 22;
-    L.next = R(ox + CW - nw, foot_y, nw, 16);
-    std::string bl = tr(p == 0 ? str::ob_skip : str::ob_back);
-    double bw = text_w(bl, 1) + 16;
-    L.back = R(ox, foot_y, bw, 16);
-    L.dots.clear();
-    double dx = W / 2 - (kPages * 6 + (kPages - 1) * 4) / 2.0;
-    for (int i = 0; i < kPages; ++i) L.dots.push_back(R(dx + i * 10 - 2, foot_y + 4, 10, 8));
+    L_[p].heading = R(ox, ty, CW, 24);
+    L_[p].text_y = line_y_;
   }
-
-  // 0 · intro: face, bucket, heading, one line
   {
-    Lay& L = L_[0];
-    double fixed = 24 + 6;
-    double fs = std::clamp(std::min((AH - fixed) / 32.0, CW / 90.0), 1.0, 3.34);
-    fs = std::floor(fs * 3) / 3.0;
-    int bc = std::max(1, (int)std::lround(fs * 0.8));
-    double total = 3 * fs + 13 * fs + kBucketH * bc + 8 + fixed;
-    double y = top + std::max(0.0, (AH - total) / 2);
-    double eye_y = y + 3 * fs;
-    L.face_scale = fs;
-    L.face_x = W / 2 * s;
-    L.face_y = (eye_y + 3 * fs) * s;  // Face::cy: the eyes sit 3 * scale above it
-    L.bucket_cell = bc;
-    L.bucket_x = (int)std::lround((W / 2 - kBucketW * bc / 2.0) * s);
-    L.bucket_y = (int)std::lround((eye_y + 13 * fs) * s);
-    L.text_y = (int)std::lround((eye_y + 13 * fs + kBucketH * bc + 10) * s);
-    L.heading = R(ox, L.text_y / s, CW, 24);
-  }
-
-  // 1 · ambient light: the demo window glowing, heading, text, the toggle
-  {
-    Lay& L = L_[1];
-    // the line under the heading may wrap in longer languages: the toggle moves down with it
-    double lines = (double)std::max<size_t>(1, wrap_text(tr(str::ob_ambient_line), (int)(CW * 0.86 * s), s).size());
-    double fixed = 24 + 4 + 13 * lines + 16 + 16;
-    // demo (54 K tall) + room for its light above (12 K) and below (22 K): 88 K in all
-    K_ = std::clamp(std::min((AH - fixed) / 88.0, CW * 0.42 / 96.0), 0.5, 2.2);
-    double dw = std::round(96 * K_), dh = std::round(54 * K_);
-    double total = 12 * K_ + dh + 22 * K_ + fixed;
-    double y = top + std::max(0.0, (AH - total) / 2) + 12 * K_;
-    L.demo = R(std::round(W / 2 - dw / 2), std::round(y), dw, dh);
-    double ty = y + dh + 22 * K_;  // clear of the light
-    L.heading = R(ox, ty, CW, 24);
-    L.text_y = (int)std::lround((ty + 28) * s);
-    double tgy = ty + 28 + 13 * lines + 16;
     double tw = 28 + 8 + toggle_label_w(1);
-    L.toggle = R(std::round(W / 2 - tw / 2), tgy, 28, 16);
+    L_[1].toggle = R(std::round(W / 2 - tw / 2), cy, 28, 16);
   }
-
-  // 2 · interface size: a sample of the real controls, heading, text, the five sizes
   {
     Lay& L = L_[2];
     double segw = 8;
     for (auto n : kSizeNames) segw += text_w(tr(n), 1) + 16;
-    double fixed = 26 + 22 + 24 + 14 + 16;
-    double y = top + std::max(0.0, (AH - fixed) / 2) + 6;
-    // the sample is drawn at the real interface scale: its size in this page's art px varies
-    double k = ui_s / s;
-    double dkw = std::min(CW, 176.0 * k), dkh = 26 * k;
-    L.dock = R(std::round(W / 2 - dkw / 2), y + (26 - dkh), dkw, dkh);
-    double ty = y + 26 + 22;
-    L.heading = R(ox, ty, CW, 24);
-    L.text_y = (int)std::lround((ty + 28) * s);
-    double sy = ty + 24 + 14;
     L.segs.clear();
     double sx = std::round(W / 2 - segw / 2) + 4;
     for (auto n : kSizeNames) {
       double sw = text_w(tr(n), 1) + 16;
-      L.segs.push_back(R(sx, sy, sw, 16));
+      L.segs.push_back(R(sx, cy, sw, 16));
       sx += sw;
     }
     const Rect& sel = L.segs[std::clamp(scale_index(), 0, kUiSizes - 1)];
     seg_x_.snap(sel.x);
     seg_w_.snap(sel.w);
   }
+  if (L_[0].next.b() > (int)std::lround((H - 6) * s)) overflow_ = true;  // (the footer past the window's foot)
 
-  // 3 · what is coming: heading, then a row per item (icon, title and tag, a short line)
+  // the eyes: as big as the picture holds, standing on a line two thirds down it
+  double fs = std::min(bw * 0.7 / 22.0, bh * 0.33 / 6.0);  // (the eyes lead, the words still read beside them)
+  fs = std::max(1.0, std::floor(fs * 3) / 3.0);
+  face_scale_ = fs;
+  face_x_ = box_.x + box_.w / 2.0;
+  line_at_ = box_.y + (int)std::lround(std::round(bh * 0.70) * s);
+  face_y_ = line_at_ - fs * s;  // Face::cy is the eyes' bottom: a little air above the line
+
+  // their light: an ellipse wider than the picture, cool on the left and warm on the right, and
+  // the line itself, lit where the light falls on it
   {
-    Lay& L = L_[3];
-    int ic = icon_cell(s);
-    double icon_w = kIconCols * ic / s, icon_h = kIconRows * ic / s;
-    // the words get 300 px of art; a longer language that would push the list into the footer
-    // gets a wider column (fewer wrapped lines) before anything else gives way
-    double rw = 0, rh = 0, total = 0;
-    for (int words : {kItemTextW, 360, 420, 500}) {
-      rw = std::min(CW, icon_w + kIconGap + words);
-      L.items.clear(); L.item_lines.clear();
-      // every row the same height (the tallest), so the list reads as one even column
-      rh = icon_h;
-      for (auto& it : kUpcoming) {
-        int words_w = (int)std::lround((rw - icon_w - kIconGap) * s);
-        int n = (int)wrap_text(tr(it.line), words_w, s).size();
-        // the ripeness tag rides beside the title, or on its own line when both do not fit
-        if (text_w(tr(it.title), s) + (int)std::lround(8 * s) + text_w(tr(it.tag), s) + (int)std::lround(12 * s) > words_w) n += 1;
-        L.item_lines.push_back(n);
-        rh = std::max(rh, (double)kTitleH + kLineH * n);
+    const double rx = std::min(CW * 0.5, bw * 0.95), ry = bh * 0.62;
+    const double ecy = face_y_ - 3 * fs * s;
+    eye_light_r_ = Rect(face_x_ - rx * s, ecy - ry * s, 2 * rx * s, 2 * ry * s);
+    const int ly = line_at_ - eye_light_r_.y, lh = std::max(1, (int)std::lround(s));
+    // (an edge dragged mostly moves it: made again only when its own size or its line changes)
+    const uint64_t key = (uint64_t)eye_light_r_.w << 40 ^ (uint64_t)eye_light_r_.h << 20 ^ (uint64_t)(ly & 0xFFFFF) ^ (uint64_t)lh << 60;
+    if (key != eye_light_key_ || eye_light_.w != eye_light_r_.w) {
+    eye_light_key_ = key;
+    radial_light(eye_light_, eye_light_r_.w, eye_light_r_.h, kCool, kMid, kWarm, 0.5);
+    for (int y = ly; y < ly + lh && y >= 0 && y < eye_light_.h; ++y) {
+      uint32_t* row = eye_light_.px.data() + (size_t)y * eye_light_.w;
+      for (int x = 0; x < eye_light_.w; ++x) {
+        const double u = (x + 0.5) / eye_light_.w, d = std::fabs(u - 0.5) * 2;
+        const double a = std::clamp((1 - d * d) * 0.85, 0.0, 1.0);
+        const Rgb col = mix(u < 0.5 ? mix(kCool, kMid, u * 2) : mix(kMid, kWarm, (u - 0.5) * 2), Rgb{255, 255, 255}, 0.25);
+        const uint32_t dst = row[x];
+        const double da = (dst >> 24) / 255.0;
+        auto ch = [&](uint8_t v, int sh) { return (uint32_t)std::min(255.0, v * a + ((dst >> sh) & 255) * (1 - a)); };
+        const uint32_t A = (uint32_t)std::lround((a + da * (1 - a)) * 255);
+        row[x] = (A << 24) | (ch(col.r, 16) << 16) | (ch(col.g, 8) << 8) | ch(col.b, 0);
       }
-      total = 24 + 18 + 3 * rh + 2 * kRowGap;
-      if (total <= AH || rw >= CW) break;
     }
-    double y = top + std::max(0.0, (AH - total) / 2);
-    L.heading = R(ox, y, CW, 24);
-    y += 24 + 18;
-    for (int i = 0; i < 3; ++i) { L.items.push_back(R(std::round(W / 2 - rw / 2), std::round(y), rw, rh)); y += rh + kRowGap; }
+    compose_on(eye_light_base_, eye_light_, P().bg, 1.0);
+    }
   }
-
-  // The footer (back, page dots, continue) is never covered: content that would reach it
-  // moves up, as far as the top margin allows.
-  const int limit = (int)std::lround(bottom * s);
-  overflow_ = false;
-  auto lift = [&](Lay& L, int content_bottom) {
-    int over = content_bottom - limit;
-    if (over <= 0) return;
-    int room = std::max(0, (int)std::lround(L.heading.y - top * s) - 1);
-    if (over > room) overflow_ = true;  // even lifted, it would touch the footer
-    int d = std::min(over, room);
-    L.heading.y -= d; L.text_y -= d; L.toggle.y -= d; L.demo.y -= d; L.dock.y -= d;
-    L.bucket_y -= d; L.face_y -= d;
-    for (auto& r : L.segs) r.y -= d;
-    for (auto& r : L.items) r.y -= d;
-  };
-  lift(L_[0], L_[0].text_y + (int)std::lround(24 * s));
-  lift(L_[1], L_[1].toggle.b());
-  if (!L_[2].segs.empty()) lift(L_[2], L_[2].segs[0].b());
-  if (!L_[3].items.empty()) lift(L_[3], L_[3].items.back().b());
+  scene_light_key_ = 0;  // made again for the new size when it is next drawn
 }
 
 void OnboardingView::place_face(double now, bool snap) {
   (void)now;
   double tx, ty, ts;
   if (finish_t0_ > 0) { tx = finish_fx_; ty = finish_fy_; ts = finish_fs_; }
-  else { const Lay& L = L_[0]; tx = L.face_x; ty = L.face_y; ts = L.face_scale; }
+  else { tx = face_x_; ty = face_y_; ts = face_scale_; }
   if (snap) { fx_.snap(tx); fy_.snap(ty); fs_.snap(ts); face_placed_ = true; }
   else { fx_.target = tx; fy_.target = ty; fs_.target = ts; }
   double fs = finish_t0_ > 0 ? ui_s : s;
   face.layout(fx_.x, fy_.x, fs, std::max(0.34, std::round(fs_.x * 3) / 3.0));
-  face.max_look = 3.0 * face.scale / 1.5;
+  // big eyes look around a little, not across the picture
+  face.max_look = finish_t0_ > 0 ? 3.0 * face.scale / 1.5 : std::min(3.0 * face.scale / 1.5, 0.45 * face.scale + 1.5);
 }
 
 void OnboardingView::start(double now) {
@@ -314,11 +254,7 @@ void OnboardingView::start(double now) {
   page_enter_ = now;
   face.set_mode(Face::Mode::Follow, now);
   face.look(0, 0);
-  bucket_.snap(16);
-  bucket_.target = 16;
-  next_pop_ = now + 0.95;
-  burst_until_ = now + 1.5;
-  if (reduce_motion()) { t0_ = now - 10; bucket_.snap(0); }
+  if (reduce_motion()) t0_ = now - 10;
   knob_.snap(ambient ? 1 : 0);
   glow_.snap(ambient ? 1 : 0);
 }
@@ -331,8 +267,9 @@ void OnboardingView::go(int p, double now) {
   pos_.target = p;
   dot_.target = p;
   if (kb_) focus_ = kNext;
-  place_face(now, false);
-  face.notice(now);
+  // the eyes close on the way to the scene (their light becomes the window's), open coming back
+  face.closed = p != 0;
+  if (p == 0) face.notice(now);
 }
 
 void OnboardingView::set_ambient(bool on, double now) {
@@ -342,10 +279,12 @@ void OnboardingView::set_ambient(bool on, double now) {
   knob_.v += on ? 5 : -5;  // the flick that starts it
   glow_.target = on ? 1 : 0;
   toggle_t_ = now;
-  if (on) { happy_until_ = now + 0.9; face.hop.v = -34; }
 }
 
 void OnboardingView::set_scale_choice(int id, double now) {
+  if (id == ui_scale) return;
+  // mid-crossfade: it starts again from what is shown most
+  if (now - scale_t_ >= kScaleFade * 0.5 || prev_scale_idx_ < 0) prev_scale_idx_ = scale_index();
   ui_scale = id;
   if (L_[2].segs.size() == 4) {
     const Rect& sel = L_[2].segs[std::clamp(scale_index(), 0, kUiSizes - 1)];
@@ -353,8 +292,6 @@ void OnboardingView::set_scale_choice(int id, double now) {
     seg_w_.target = sel.w;
   }
   scale_t_ = now;
-  face.hop.v = -30;
-  happy_until_ = now + 0.6;
 }
 
 void OnboardingView::finish(double now, double face_x, double face_y, double face_scale) {
@@ -364,6 +301,7 @@ void OnboardingView::finish(double now, double face_x, double face_y, double fac
   finish_fy_ = face_y;
   finish_fs_ = face_scale;
   face_handoff_ = pos_.x < 0.5;  // only when the eyes are on screen do they fly to the home
+  face.closed = false;
   fx_ = Spring::rd(0.36, 0.9, 0.3); fx_.snap(face.cx);
   fy_ = Spring::rd(0.36, 0.9, 0.3); fy_.snap(face.cy);
   fs_ = Spring::rd(0.36, 1.0, 0.003); fs_.snap(face.scale * s / ui_s);  // same size on screen, in home units
@@ -371,44 +309,119 @@ void OnboardingView::finish(double now, double face_x, double face_y, double fac
   happy_until_ = 0;
   face.mouth.target = 0;
   face.look(0, 0);
-  kernels_.clear();
 }
 
-// ── popcorn ─────────────────────────────────────────────────────────
-void OnboardingView::pop(double now, bool to_mouth) {
-  const Lay& L = L_[0];
-  Kernel k{};
-  k.t0 = now;
-  k.spin = rng_.pick(2);
-  k.x = rng_.range(-4.0, 4.0);
-  k.y = 1;
-  if (to_mouth) {
-    // a ballistic arc that ends in the mouth
-    double cell = L.bucket_cell * s;
-    double mx = (face.cx - (L.bucket_x + kBucketW * cell / 2.0)) / cell;
-    double my = (face.cy + 1.9 * std::lround(3 * face.scale) * s - L.bucket_y) / cell;
-    double T = 0.62;
-    k.vx = (mx - k.x) / T;
-    k.vy = (my - k.y - 0.5 * kGravity * T * T) / T;
-    k.life = T;
-    k.to_mouth = true;
-  } else {
-    k.vx = rng_.range(-15.0, 15.0);
-    if (std::fabs(k.vx) < 3) k.vx = k.vx < 0 ? -4 : 4;
-    k.vy = -rng_.range(28.0, 40.0);
-    k.life = 2.2;
+// ── the scene ───────────────────────────────────────────────────────
+// Time in the scene: from the welcome's start, at 12 pictures a second; it opens on the teal mood
+// (the one the light is shown with). Reduced motion: one still picture.
+double OnboardingView::scene_time(double now) const {
+  if (reduce_motion()) return kMoodDur;
+  double t = std::max(0.0, now - t0_) + kMoodDur;
+  return std::floor(t * kSceneFps) / kSceneFps;
+}
+
+OnboardingView::Mood OnboardingView::mood(double now) const {
+  // three film moods the scene drifts through, each with the light it would cast
+  static const Mood moods[3] = {
+      {{38, 44, 104}, {232, 128, 72}, {255, 218, 150}, {74, 52, 92}, {26, 18, 38}, {96, 92, 190}, {244, 140, 76}},
+      {{10, 54, 84}, {58, 186, 176}, {224, 255, 240}, {20, 88, 98}, {8, 36, 46}, {40, 120, 200}, {64, 206, 186}},
+      {{30, 12, 64}, {186, 62, 168}, {255, 186, 238}, {58, 22, 82}, {18, 8, 30}, {120, 60, 210}, {214, 76, 190}},
+  };
+  double cyc = std::fmod(scene_time(now) / kMoodDur, 3.0);
+  int i0 = (int)cyc % 3, i1 = (i0 + 1) % 3;
+  double f = smoothstep(0.6, 1.0, cyc - std::floor(cyc));
+  auto M = [&](Rgb Mood::*m) { return mix(moods[i0].*m, moods[i1].*m, f); };
+  return {M(&Mood::top), M(&Mood::bot), M(&Mood::sun), M(&Mood::hill_far), M(&Mood::hill_near), M(&Mood::glow_top), M(&Mood::glow_bot)};
+}
+
+// What the scene shows (its colours, its progress line), coarse enough that the same signature
+// means the same pixels: the welcome draws again only when it changes.
+uint64_t OnboardingView::scene_signature(double now) const {
+  double cyc = std::fmod(scene_time(now) / kMoodDur, 3.0);
+  uint64_t i0 = (uint64_t)cyc % 3;
+  uint64_t f = (uint64_t)std::lround(smoothstep(0.6, 1.0, cyc - std::floor(cyc)) * 255);
+  uint64_t prog = 0;
+  if (box_.w > 0) {
+    const int cell = std::max(1, (int)std::lround(box_.w / 96.0));
+    const int lw = box_.w - 4 * cell;
+    prog = (uint64_t)((lw * (0.18 + 0.7 * std::fmod(scene_time(now) / 24.0, 1.0))) / cell);
   }
-  kernels_.push_back(k);
-  ++pops_;
+  return i0 | f << 4 | prog << 16;
+}
+
+void OnboardingView::draw_scene(Canvas& c, const Rect& r, double a, double now, bool progress) const {
+  if (a <= 0.003) return;
+  const Palette& p = P();
+  const Mood m = mood(now);
+  const int x0 = r.x, y0 = r.y, ww = r.w, hh = r.h;
+  const int cell = std::max(1, (int)std::lround(ww / 96.0));
+  c.fill(x0, y0, ww, hh, p.screen, a);
+  const int bands = 9, sky_h = (int)(hh * 0.72);
+  for (int b = 0; b < bands; ++b) {
+    int by0 = y0 + sky_h * b / bands, by1 = y0 + sky_h * (b + 1) / bands;
+    by0 = y0 + (by0 - y0) / cell * cell;
+    by1 = y0 + (by1 - y0) / cell * cell;
+    c.fill(x0, by0, ww, by1 - by0, mix(m.top, m.bot, b / (bands - 1.0)), a);
+  }
+  // the sun, a pixel disc low behind the hills
+  const double sr = ww * 0.094;
+  const double scx = x0 + ww * 0.62, scy = y0 + sky_h * 0.78;
+  for (int yy = (int)(scy - sr); yy < scy + sr; yy += cell)
+    for (int xx = (int)(scx - sr); xx < scx + sr; xx += cell) {
+      int qx = x0 + (xx - x0) / cell * cell, qy = y0 + (yy - y0) / cell * cell;
+      double dx = qx + cell / 2.0 - scx, dy = qy + cell / 2.0 - scy;
+      if (dx * dx + dy * dy <= sr * sr && qy < y0 + hh && qx >= x0 && qx + cell <= x0 + ww) c.fill(qx, qy, cell, cell, m.sun, a);
+    }
+  // two ridges of hills, drawn column by column on the cell grid
+  for (int xx = 0; xx < ww; xx += cell) {
+    double u = (double)xx / ww;
+    double far_h = hh * (0.40 + 0.10 * std::sin(u * 7.0 + 1.3) + 0.05 * std::sin(u * 17.0));
+    double near_h = hh * (0.26 + 0.08 * std::sin(u * 5.0 + 4.0) + 0.03 * std::sin(u * 23.0 + 2.0));
+    int fy = y0 + hh - (int)far_h / cell * cell, ny = y0 + hh - (int)near_h / cell * cell;
+    int cw = std::min(cell, ww - xx);
+    c.fill(x0 + xx, fy, cw, y0 + hh - fy, m.hill_far, a);
+    c.fill(x0 + xx, ny, cw, y0 + hh - ny, m.hill_near, a);
+  }
+  // a whisper of the player: a progress line along the bottom (the third screen has the real one)
+  if (progress) {
+    int ly = y0 + hh - 2 * cell, lx0 = x0 + 2 * cell, lw = ww - 4 * cell;
+    int played = (int)((lw * (0.18 + 0.7 * std::fmod(scene_time(now) / 24.0, 1.0))) / cell) * cell;
+    c.fill(lx0, ly, lw, std::max(1, cell / 2), p.pixel, a * 0.25);
+    c.fill(lx0, ly, played, std::max(1, cell / 2), p.pixel, a * 0.85);
+  }
+  // the frame: one art px of edge, stepped corners
+  int e = std::max(1, (int)std::lround(s));
+  c.fill(x0 + e, y0 - e, ww - 2 * e, e, p.edge, a);
+  c.fill(x0 + e, y0 + hh, ww - 2 * e, e, p.edge, a);
+  c.fill(x0 - e, y0 + e, e, hh - 2 * e, p.edge, a);
+  c.fill(x0 + ww, y0 + e, e, hh - 2 * e, p.edge, a);
+}
+
+double OnboardingView::window_light() const {
+  if (finish_t0_ > 0 || light_inside) return 0;
+  double page = clamp01(1 - std::fabs(pos_.x - 1) * 1.7);
+  return clamp01(knob_.x) * page;
+}
+
+// The halo's 26 stretches around the window, in the scene's colours: the sky's at the top, the
+// ground's at the bottom, mixed down the sides.
+void OnboardingView::scene_zones(double now, Rgb zone[kZones], double light[kZones]) const {
+  const Mood m = mood(now);
+  for (int k = 0; k < kZones; ++k) {
+    double v;  // 0 at the top .. 1 at the bottom
+    if (k < 8) v = 0;
+    else if (k < 13) v = (k - 8 + 0.5) / 5.0;
+    else if (k < 21) v = 1;
+    else v = 1 - (k - 21 + 0.5) / 5.0;
+    zone[k] = mix(m.glow_top, m.glow_bot, v);
+    light[k] = 0.9;
+  }
 }
 
 // ── tick ────────────────────────────────────────────────────────────
 bool OnboardingView::tick(double now, double dt) {
   bool moving = false;
   double t = now - t0_;
-  // the bucket rises in once the eyes are there
-  if (t >= 0.35 && bucket_.target != 0 && finish_t0_ < 0) { bucket_.target = 0; bucket_.v = -6; }
-  moving |= bucket_.step(dt);
   moving |= pos_.step(dt);
   moving |= dot_.step(dt);
   moving |= knob_.step(dt);
@@ -418,81 +431,51 @@ bool OnboardingView::tick(double now, double dt) {
   moving |= fx_.step(dt) | fy_.step(dt) | fs_.step(dt);
   place_face(now, false);
 
-  bool intro_visible = pos_.x < 0.999 && finish_t0_ < 0;
-  if (intro_visible && !reduce_motion()) {
-    if (now >= next_pop_) {
-      bool burst = now < burst_until_;
-      bool mouth = (pops_ == 3) || (!burst && rng_.uni() < 0.3);
-      pop(now, mouth);
-      if (burst) { happy_until_ = std::max(happy_until_, now + 1.4); face.hop.v = -30; }
-      next_pop_ = now + (burst ? 0.11 : rng_.range(1.3, 3.0));
-    }
-    moving = true;
-  }
-  // kernels: fly, and either fall back into the bucket, out of the picture, or into the mouth
-  for (auto& k : kernels_) {
-    double kt = now - k.t0;
-    if (k.to_mouth) {
-      if (kt >= k.life - 0.24 && face.gulp_t0 < 0) face.mouth.target = std::max(face.mouth.target, 0.85);
-      if (kt >= k.life) { face.gulp(now); k.life = -1; }
-    }
-  }
-  for (auto& k : kernels_) {
-    if (k.life < 0) continue;
-    double kdt = std::min(dt, 0.05);
-    k.vy += kGravity * kdt;
-    k.x += k.vx * kdt;
-    k.y += k.vy * kdt;
-    if (!k.to_mouth && k.vy > 0 && std::fabs(k.x) < kBucketW / 2.0 - 2 && k.y > 2) k.life = -1;  // back in
-    if (!k.to_mouth && now - k.t0 > k.life) k.life = -1;
-  }
-  kernels_.erase(std::remove_if(kernels_.begin(), kernels_.end(), [](const Kernel& k) { return k.life < 0; }),
-                 kernels_.end());
-  if (!kernels_.empty()) moving = true;
-
-  // where the eyes go: the newest kernel, the control being talked about, or the cursor
+  // the eyes follow the cursor on the first screen
   if (finish_t0_ < 0) {
     bool cursor = tx_ > -100000 && now - track_moved_ < 2.5;
-    if (page_ == 0 && !kernels_.empty()) {
-      const Lay& L = L_[0];
-      const Kernel& k = kernels_.back();
-      double cell = L.bucket_cell * s;
-      face.look_at(L.bucket_x + (kBucketW / 2.0 + k.x) * cell, L.bucket_y + k.y * cell, 0.9);
-    } else if (cursor) {
-      face.look_at(tx_, ty_, 0.7);
-    } else if (page_ == 1) {
-      face.look_at(L_[1].toggle.cx(), L_[1].toggle.cy(), 0.8);
-    } else if (page_ == 2 && L_[2].segs.size() == 4) {
-      face.look_at(seg_x_.x + seg_w_.x / 2, L_[2].segs[0].cy(), 0.8);
-    } else {
-      face.look(0, 0);
-    }
+    if (cursor) face.look_at(tx_, ty_, 0.7);
+    else face.look(0, 0);
   }
-  // peeking over the picture, a downward glance would sink the eyes behind it
-  if (page_ != 0 && finish_t0_ < 0) face.gy.target = std::min(face.gy.target, 0.0);
-  face.happy = now < happy_until_ || face.gulp_t0 > 0;
-  face.thinking = page_ == 1 && !ambient && now - toggle_t_ < 1.2;
-  moving |= face.tick(now, dt);
+  face.happy = now < happy_until_;
+  const bool face_seen = pos_.x < 0.999 || finish_t0_ > 0;
+  if (face_seen) moving |= face.tick(now, dt);
   moving |= chrome.tick(dt);
 
-  hov_.resize(kDot3 + 1, 0.0);
+  hov_.resize(kDot2 + 1, 0.0);
   int act = kb_ ? focus_ : hover_;
-  for (int id = 0; id <= kDot3; ++id) {
+  for (int id = 0; id <= kDot2; ++id) {
     double v = hover_step(hov_[id], act == id, dt);
     if (v != hov_[id]) { hov_[id] = v; moving = true; }
   }
-  double typed_end = kIntroType + cps(tr(str::ob_intro)) * kCharDur + 0.9;
-  if (t < typed_end) moving = true;
+  double typed_end = kIntroType + cps(tr(str::ob_intro)) * kCharDur + 0.9 + 0.4;
+  if (t < typed_end && pos_.x < 0.999) moving = true;
   if (finish_t0_ > 0 && now - finish_t0_ < 0.6) moving = true;
-  if (now - toggle_t_ < 1.3 || now - scale_t_ < 0.7) moving = true;
-  if (pos_.x > 2.001 && finish_t0_ < 0 && !reduce_motion()) moving = true;  // the icons keep signalling
+  // the scene plays only while it is seen, and draws again only when its picture changed
+  if (pos_.x > 0.001 && finish_t0_ < 0) {
+    uint64_t k = scene_signature(now);
+    if (k != scene_key_) { scene_key_ = k; moving = true; }
+  }
+  if (now - scale_t_ < kScaleFade + 0.02) moving = true;
   return moving;
 }
 
 double OnboardingView::next_event(double now) const {
-  if (pos_.x < 0.999 && finish_t0_ < 0) return 0;  // the popcorn keeps going on the first screen
+  if (finish_t0_ > 0 || !pos_.settled() || !knob_.settled()) return 0;
+  if (now - scale_t_ < kScaleFade + 0.02) return 0;
   if (chrome.vis.v != chrome.vis.target) return 0;
-  return face.next_event(now);
+  double t = now - t0_;
+  if (page_ == 0) {
+    double typed_end = kIntroType + cps(tr(str::ob_intro)) * kCharDur + 0.9 + 0.4;
+    if (t < typed_end) return 0;
+    return face.next_event(now);
+  }
+  if (reduce_motion()) return 60;
+  // the next picture of the scene that differs from this one (a mood turning, the line moving)
+  const uint64_t k = scene_signature(now);
+  for (double d = 1 / kSceneFps; d < 4.0; d += 1 / kSceneFps)
+    if (scene_signature(now + d) != k) return std::max(0.0, d - 0.004);
+  return 4.0;
 }
 
 // ── input ───────────────────────────────────────────────────────────
@@ -516,7 +499,7 @@ int OnboardingView::hit(int x, int y) const {
 
 bool OnboardingView::is_background(int x, int y) const {
   if (hit(x, y) != kNone || chrome.area(w).contains(x, y)) return false;
-  return !face.bounds().contains(x, y);
+  return page_ != 0 || !face.bounds().contains(x, y);
 }
 
 std::vector<int> OnboardingView::focus_order() const {
@@ -549,7 +532,7 @@ ObAction OnboardingView::activate(int id, double now) {
       return {ObAct::Ambient, on ? 1 : 0};
     }
     case kSeg0: case kSeg1: case kSeg2: case kSeg3: case kSeg4: return pick_scale(id - kSeg0, now);
-    case kDot0: case kDot1: case kDot2: case kDot3: go(id - kDot0, now); return {};
+    case kDot0: case kDot1: case kDot2: go(id - kDot0, now); return {};
     default: return {};
   }
 }
@@ -580,10 +563,9 @@ ObAction OnboardingView::mouse_down(int x, int y, double now) {
     case WindowChrome::Pin: return {ObAct::WinPin, 0};
     default: break;
   }
-  if (face.bounds().contains(x, y) && finish_t0_ < 0) {  // a poke: it hops and smiles
+  if (page_ == 0 && face.bounds().contains(x, y) && finish_t0_ < 0) {  // a poke: it hops and smiles
     face.hop.v = -40;
     happy_until_ = now + 0.7;
-    if (page_ == 0) pop(now, true);
     return {};
   }
   return activate(hit(x, y), now);
@@ -622,38 +604,21 @@ bool OnboardingView::track(int x, int y, double now) {
   if (x == tx_ && y == ty_) return false;
   tx_ = x; ty_ = y;
   track_moved_ = now;
-  return true;
+  return page_ == 0 || pos_.x < 0.999;
 }
 
 // ── drawing ─────────────────────────────────────────────────────────
-void OnboardingView::draw_bucket(Canvas& c, int x, int y, int cell, double a) const {
-  const Palette& p = P();
-  int px = cell * (int)std::lround(s);
-  if (s != std::lround(s)) px = (int)std::lround(cell * s);
-  for (int j = 0; j < kBucketH; ++j)
-    for (int i = 0; i < kBucketW;) {
-      char ch = kBucket[j][i];
-      if (ch == '.') { ++i; continue; }
-      int run = 1;
-      while (i + run < kBucketW && kBucket[j][i + run] == ch) ++run;
-      Rgb col = ch == '#' ? p.pixel : ch == '+' ? p.dim : ch == 'R' ? p.fg : ch == 'a' ? p.fg : p.faint;
-      c.fill(x + i * px, y + j * px, run * px, px, col, a);
-      i += run;
-    }
-}
-
-void OnboardingView::draw_kernel(Canvas& c, double x, double y, int cell, int spin, double a) const {
-  int px = (int)std::lround(cell * s);
-  c.cells(kKernel[spin & 1], 3, 3, (int)std::lround(x - 1.5 * px), (int)std::lround(y - 1.5 * px), px, P().pixel, a);
-}
-
 void OnboardingView::draw_button(Canvas& c, const Rect& r, const std::string& label, bool primary, double hv,
-                                 double a, bool chevron) const {
+                                 double a, bool chevron, bool label_only) const {
+  if (a <= 0.003) return;
   const Palette& p = P();
-  if (primary) c.cornered(r, (int)s, mix(p.hover, p.press, hv), a);
-  else if (hv > 0) c.cornered(r, (int)s, p.hover, a * hv);
+  if (!label_only) {
+    if (primary) c.cornered(r, (int)s, mix(p.hover, p.press, hv), a);
+    else if (hv > 0) c.cornered(r, (int)s, p.hover, a * hv);
+  }
   int tw = text_w(label, s) + (chevron ? (int)std::lround(9 * s) : 0);
-  int x = r.x + (r.w - tw) / 2, y = r.y + (int)std::lround(3 * s);
+  // (the line box is 12 rows, its capitals a row lower: one row more above than below)
+  int x = r.x + (r.w - tw) / 2, y = r.y + (int)std::lround((std::floor((r.h / s - 12) / 2) + 1) * s);
   Rgb col = primary ? mix(p.fg, p.pixel, hv) : mix(p.dim, p.fg, hv);
   text(c, label, x, y, s, col, a);
   if (chevron) {
@@ -662,218 +627,166 @@ void OnboardingView::draw_button(Canvas& c, const Rect& r, const std::string& la
   }
 }
 
-void OnboardingView::draw_toggle(Canvas& c, const Rect& r, double a) const {
-  // a 14 x 8 grid of big pixels: stepped corners, a square knob that slides on a spring
-  const Palette& p = P();
-  double cell = r.w / 14.0;
-  double k = std::clamp(knob_.x, -0.12, 1.12), kc = clamp01(k);
-  double hv = std::max(hov(kToggle), 0.0);
-  Rgb on = p.fg;
-  auto box = [&](double gx, double gy, double gw, double gh, Rgb col, double al) {
-    c.fill(r.x + gx * cell, r.y + gy * cell, gw * cell, gh * cell, col, al);
-  };
-  auto stepped = [&](double gx, double gy, double gw, double gh, Rgb col, double al) {
-    box(gx + 1, gy, gw - 2, 1, col, al);
-    box(gx, gy + 1, gw, gh - 2, col, al);
-    box(gx + 1, gy + gh - 1, gw - 2, 1, col, al);
-  };
-  stepped(0, 0, 14, 8, mix(mix(p.faint, p.dim, hv * 0.6), on, kc), a);
-  if (kc < 1) stepped(1, 1, 12, 6, p.bg, a * (1 - kc));  // off: an outlined track
-  // tiny pixel marks inside the track: a dash when on, a ring when off
-  if (kc > 0.5) box(3, 3, 1, 2, p.bg, a * (kc - 0.5) * 2);  // a little 'on' tick
-  else {
-    double ka = a * (1 - kc * 2);
-    box(9.5, 3, 2, 1, p.faint, ka); box(9.5, 4, 2, 1, p.faint, ka);
-  }
-  double kx = 1 + 6 * k;
-  Rgb knob = mix(mix(p.dim, p.fg, hv), p.bg, kc);
-  stepped(kx, 1, 6, 6, knob, a);
+void OnboardingView::draw_toggle(Canvas& c, const Rect& r, double a, Rgb on) const {
+  // the player's own switch (the same drawing), here at the welcome's pixel
+  draw_switch(c, r.x, r.y, r.w / (double)kSwitchW, knob_.x, on, std::max(hov(kToggle), 0.0), true, a);
 }
 
-void OnboardingView::draw_demo(Canvas& c, const Rect& r, double ox, double a, double now, int stage) const {
-  const Palette& p = P();
-  // three film moods the scene drifts through, each with the light it would cast
-  struct Mood { Rgb top, bot, sun, far, near, glow_top, glow_bot; };
-  static const Mood moods[3] = {
-      {{38, 44, 104}, {232, 128, 72}, {255, 218, 150}, {74, 52, 92}, {26, 18, 38}, {96, 92, 190}, {244, 140, 76}},
-      {{10, 54, 84}, {58, 186, 176}, {224, 255, 240}, {20, 88, 98}, {8, 36, 46}, {40, 120, 200}, {64, 206, 186}},
-      {{30, 12, 64}, {186, 62, 168}, {255, 186, 238}, {58, 22, 82}, {18, 8, 30}, {120, 60, 210}, {214, 76, 190}},
-  };
-  double cyc = std::fmod(std::max(0.0, now) / 3.4, 3.0);
-  int i0 = (int)cyc % 3, i1 = (i0 + 1) % 3;
-  double f = smoothstep(0.72, 1.0, cyc - std::floor(cyc));
-  auto M = [&](Rgb Mood::*m) { return mix(moods[i0].*m, moods[i1].*m, f); };
-  Rgb top = M(&Mood::top), bot = M(&Mood::bot), sun = M(&Mood::sun), far = M(&Mood::far), near = M(&Mood::near);
-  Rgb gtop = M(&Mood::glow_top), gbot = M(&Mood::glow_bot);
-
-  int x0 = (int)std::lround(r.x + ox), y0 = r.y;
-  int cell = std::max(1, (int)std::lround(K_)) * std::max(1, (int)std::lround(s));
-  // the light: stepped rings of big pixels, ordered dithering at the edge (pixel language, no blur)
-  double g = std::clamp(glow_.x, 0.0, 1.2);
-  if (stage == 0 && g > 0.003) {
-    int R = (int)std::lround(18 * K_ * s);
-    int gc = cell * 2;
-    static const int bayer[4] = {0, 2, 3, 1};
-    for (int yy = y0 - R; yy < y0 + r.h + R; yy += gc)
-      for (int xx = x0 - R; xx < x0 + r.w + R; xx += gc) {
-        double cx = xx + gc / 2.0, cy = yy + gc / 2.0;
-        double dx = std::max({(double)x0 - cx, 0.0, cx - (x0 + r.w)}), dy = std::max({(double)y0 - cy, 0.0, cy - (y0 + r.h)});
-        double d = std::sqrt(dx * dx + dy * dy) / R;
-        if (d <= 0 || d >= 1) continue;
-        double fall = (1 - d) * (1 - d);
-        double level = fall * 4;
-        int th = bayer[((yy / gc) & 1) * 2 + ((xx / gc) & 1)];
-        double q = std::floor(level + th / 4.0) / 4.0;  // 4 quantised steps, dithered between them
-        if (q <= 0) continue;
-        double ny = clamp01((cy - (y0 - R)) / (r.h + 2.0 * R));
-        c.fill(xx, yy, gc, gc, mix(gtop, gbot, ny), a * g * std::min(1.0, q) * 0.62);
-      }
-  }
-  if (stage == 0) return;
-  // the little window and its film
-  int ww = r.w, hh = r.h;
-  c.fill(x0, y0, ww, hh, p.screen, a);
-  int bands = 9;
-  int sky_h = (int)(hh * 0.72);
-  for (int b = 0; b < bands; ++b) {
-    int by0 = y0 + sky_h * b / bands, by1 = y0 + sky_h * (b + 1) / bands;
-    by0 = y0 + (by0 - y0) / cell * cell;
-    by1 = y0 + (by1 - y0) / cell * cell;
-    c.fill(x0, by0, ww, by1 - by0, mix(top, bot, b / (bands - 1.0)), a);
-  }
-  // sun, a pixel disc sinking slowly behind the hills
-  double sr = 9 * K_ * s;
-  double scx = x0 + ww * 0.62, scy = y0 + sky_h * 0.78 + std::sin(now * 0.6) * cell;
-  for (int yy = (int)(scy - sr); yy < scy + sr; yy += cell)
-    for (int xx = (int)(scx - sr); xx < scx + sr; xx += cell) {
-      int qx = x0 + (xx - x0) / cell * cell, qy = y0 + (yy - y0) / cell * cell;
-      double dx = qx + cell / 2.0 - scx, dy = qy + cell / 2.0 - scy;
-      if (dx * dx + dy * dy <= sr * sr && qy < y0 + hh) c.fill(qx, qy, cell, cell, sun, a);
-    }
-  // two ridges of hills, drawn column by column on the cell grid
-  for (int xx = 0; xx < ww; xx += cell) {
-    double u = (double)xx / ww;
-    double far_h = hh * (0.40 + 0.10 * std::sin(u * 7.0 + 1.3) + 0.05 * std::sin(u * 17.0));
-    double near_h = hh * (0.26 + 0.08 * std::sin(u * 5.0 + 4.0) + 0.03 * std::sin(u * 23.0 + 2.0));
-    int fy = y0 + hh - (int)far_h / cell * cell, ny = y0 + hh - (int)near_h / cell * cell;
-    int cw = std::min(cell, ww - xx);
-    c.fill(x0 + xx, fy, cw, y0 + hh - fy, far, a);
-    c.fill(x0 + xx, ny, cw, y0 + hh - ny, near, a);
-  }
-  // a whisper of the player: a progress line along the bottom
-  int ly = y0 + hh - 4 * cell / 2;
-  double prog = std::fmod(std::max(0.0, now) / 24.0, 1.0);
-  int lx0 = x0 + 4 * cell / 2, lw = ww - 8 * cell / 2;
-  c.fill(lx0, ly, lw, std::max(1, cell / 2), p.pixel, a * 0.25);
-  c.fill(lx0, ly, (int)(lw * (0.18 + 0.7 * prog)), std::max(1, cell / 2), p.pixel, a * 0.85);
-  // frame: one art px of edge, stepped corners
-  int e = (int)std::lround(s);
-  c.fill(x0 + e, y0 - e, ww - 2 * e, e, p.edge, a);
-  c.fill(x0 + e, y0 + hh, ww - 2 * e, e, p.edge, a);
-  c.fill(x0 - e, y0 + e, e, hh - 2 * e, p.edge, a);
-  c.fill(x0 + ww, y0 + e, e, hh - 2 * e, p.edge, a);
-  // light off: the scene itself stays, only the room goes dark
-  (void)gtop;
+// The switch's colour on the second screen: the film's, as in the player (there it is the film
+// playing; here the little scene), lifted so a dark mood never leaves it unreadable on black.
+Rgb OnboardingView::scene_ink(double now) const {
+  Rgb col = mood(now).glow_bot;
+  const double luma = 0.2126 * col.r + 0.7152 * col.g + 0.0722 * col.b;
+  if (luma < 150) col = mix(col, {255, 255, 255}, (150 - luma) / std::max(1.0, 255 - luma));
+  return mix(P().fg, col, 0.85);
 }
 
-void OnboardingView::draw_dock_sample(Canvas& c, const Rect& r, double a, double now) const {
-  // the real controls, at the real size: what the chosen size will look like while watching
-  const Palette& p = P();
-  const double s = ui_s;
-  draw_panel(c, r.x, r.y, (int)std::lround(r.w / s), (int)std::lround(r.h / s), s, {2, 1}, p.sheet, a * 0.96, p.edge, a);
-  int cy = r.y + (int)std::lround(6 * s);
-  int x = r.x + (int)std::lround(8 * s);
-  c.bitmap(bmp("rewind"), x, cy + (int)std::lround(1 * s), s, p.dim, a);
-  x += (int)std::lround(17 * s);
-  c.bitmap(bmp("pause"), x, cy, s, p.fg, a);
-  x += (int)std::lround(13 * s);
-  c.bitmap(bmp("forward"), x, cy + (int)std::lround(1 * s), s, p.dim, a);
-  int rx = r.r() - (int)std::lround(8 * s);
-  const BitmapDef* fs = bmp("fs-enter");
-  const BitmapDef* cc = bmp("cc");
-  if (fs) { rx -= (int)std::lround(fs->w * s); c.bitmap(fs, rx, cy, s, p.dim, a); }
-  if (cc) { rx -= (int)std::lround((cc->w + 8) * s); c.bitmap(cc, rx, cy, s, p.dim, a); }
-  // the timeline on the second row, with the time
-  int ty = r.y + (int)std::lround(18 * s);
-  std::string t0 = "0:42", t1 = "1:23:20";
-  int lx = r.x + (int)std::lround(8 * s);
-  text(c, t0, lx, ty - (int)std::lround(4 * s), s, p.dim, a);
-  int tx1 = r.r() - (int)std::lround(8 * s) - text_w(t1, s);
-  text(c, t1, tx1, ty - (int)std::lround(4 * s), s, p.dim, a);
-  int bx = lx + text_w(t0, s) + (int)std::lround(8 * s), bw = tx1 - (int)std::lround(8 * s) - bx;
-  if (bw > 10 * s) {
-    double k = 0.36 + 0.02 * std::sin(now * 0.5);
-    c.fill(bx, ty, bw, (int)std::max(1.0, s), p.faint, a);
-    c.fill(bx, ty, (int)(bw * k), (int)std::max(1.0, s), p.fg, a);
-    c.fill(bx + (int)(bw * k) - (int)s, ty - (int)s, (int)std::lround(2 * s), (int)std::lround(3 * s), p.pixel, a);
-  }
-}
-
-void OnboardingView::render_page(Canvas& c, int pg, double ox, double a, double now, int stage) {
+// The player's controls over the scene, as the player draws them (the same icons, rows and
+// measures, at the size chosen), on the bar's own background.
+void OnboardingView::draw_controls(Canvas& c, const Rect& scene, double a, int size_index) const {
   if (a <= 0.003) return;
-  if (stage == 0) {  // what sits behind the character: the light around the little window
-    if (pg == 1) draw_demo(c, L_[1].demo, ox, a, now, 0);
-    return;
+  const Palette& p = P();
+  const double cs = ctrl_s_[std::clamp(size_index, 0, kUiSizes - 1)];
+  auto px = [&](double v) { return (int)std::lround(v * cs); };
+  const int dw = px(kDockW), dh = px(kDockH);
+  const int x = scene.x + (scene.w - dw) / 2, y = scene.b() - px(kDockAir) - dh;
+  c.set_clip(scene);
+  draw_panel(c, x, y, kDockW, kDockH, cs, {2, 1}, p.bg, 0.92 * a, p.edge, 0.95 * a);
+  auto icon = [&](const char* name, double cx, Rgb ink) {
+    const BitmapDef* b = bmp(name);
+    if (!b) return;
+    int bx = x + px(cx) - (int)std::lround(b->w * cs / 2), by = y + px(12) - (int)std::lround(b->h * cs / 2);
+    c.bitmap(b, bx, by, cs, ink, a);
+  };
+  // the buttons' row: the volume and its line on the left, play in the middle, the rest on the right
+  icon("sound-on", 12, p.dim);
+  {
+    int bx = x + px(24), bw = px(40), by = y + px(11);
+    c.fill(bx, by, bw, px(2), p.faint, a);
+    c.fill(bx, by, px(28), px(2), p.dim, a);
+    c.fill(bx + px(28) - px(1), y + px(8), px(2), px(7), p.dim, a);
   }
+  icon("rewind", kDockW / 2.0 - 22, p.dim);
+  icon("pause", kDockW / 2.0, p.fg);
+  icon("forward", kDockW / 2.0 + 22, p.dim);
+  icon("cc", kDockW - 54, p.dim);
+  icon("fs-enter", kDockW - 32, p.dim);
+  icon("dots", kDockW - 12, p.dim);
+  // the timeline's row: the time, the line, the length
+  const std::string t0 = "0:42:10", t1 = "1:23:20";
+  text(c, t0, x + px(8), y + px(22), cs, p.dim, a);
+  text(c, t1, x + dw - px(8) - text_w(t1, cs), y + px(22), cs, p.dim, a);
+  int lx = x + px(8) + text_w(t0, cs) + px(7), lw = x + dw - px(8) - text_w(t1, cs) - px(7) - lx;
+  if (lw > 0) {
+    int ly = y + px(28);
+    c.fill(lx, ly, lw, px(1), p.faint, a);
+    int played = (int)std::lround(lw * 0.36 / cs) * (int)std::max(1.0, cs);
+    c.fill(lx, ly, played, px(1), p.fg, a);
+  }
+  // the "…" menu open above its button, as the player hangs it: words, rows and panel at the size
+  // chosen, so the choice reads at a glance (the bar alone changed little between two sizes)
+  {
+    static const str::Id items[] = {str::speed_title, str::more_chapters, str::more_mini_player};
+    constexpr int kRow = 15, kPad = 4, kSide = 9;
+    int tw = 0;
+    for (str::Id id : items) tw = std::max(tw, text_w(tr(id), 1));
+    const int mw = std::max(72, tw + 2 * kSide), mh = 3 * kRow + 2 * kPad;
+    const int mx = x + dw - px(mw), my = y - px(4) - px(mh);
+    draw_panel(c, mx, my, mw, mh, cs, {2, 1}, p.bg, 0.92 * a, p.edge, 0.95 * a);
+    for (int i = 0; i < 3; ++i) {
+      const int ry = my + px(kPad + i * kRow);
+      if (i == 0) c.cornered(Rect(mx + px(2), ry, px(mw - 4), px(kRow)), (int)std::max(1.0, std::floor(cs)), p.hover, a);
+      text(c, tr(items[i]), mx + px(kSide), ry + px(2), cs, i == 0 ? p.fg : p.dim, a);
+    }
+  }
+  c.reset_clip();
+}
+
+// The eyes on their line, with their reflection under it.
+void OnboardingView::draw_eyes(Canvas& c, double a, double now) {
+  if (a <= 0.003) return;
+  face.now_hint = now;
+  // the reflection: the eyes drawn apart, then copied upside down under the line, fading
+  const Rect fb = face.bounds();
+  const int top = std::max(fb.y, 0), bottom = line_at_;
+  if (finish_t0_ < 0 && bottom > top && fb.w > 0) {
+    Face f2 = face;
+    f2.cx -= fb.x;
+    f2.cy -= top;
+    reflect_.resize(fb.w, bottom - top);
+    reflect_.clear_transparent();
+    f2.render(reflect_, 1.0);
+    const int eye_h = (int)std::lround(6 * face.scale * s);
+    const int gap = std::max(1, (int)std::lround(s));
+    for (int y = 0; y < reflect_.h; ++y) {
+      const int dy = reflect_.h - 1 - y;          // distance above the line
+      const int ty = bottom + gap + dy;           // its image under it
+      if (ty < 0 || ty >= c.h) continue;
+      double k = 1 - dy / std::max(1.0, eye_h * 1.1);
+      if (k <= 0) continue;
+      k = 0.22 * k * k * a;
+      const uint32_t* src = reflect_.px.data() + (size_t)y * reflect_.w;
+      uint32_t* dst = c.px.data() + (size_t)ty * c.w;
+      for (int x = 0; x < reflect_.w; ++x) {
+        const int X = fb.x + x;
+        if (X < 0 || X >= c.w || !src[x]) continue;
+        const uint32_t sp = src[x], dp = dst[X];
+        const double sa = (sp >> 24) / 255.0 * k;
+        auto ch = [&](int sh) { return (uint32_t)std::min(255.0, ((sp >> sh) & 255) * k + ((dp >> sh) & 255) * (1 - sa)); };
+        const uint32_t A = (uint32_t)std::min(255.0, (sp >> 24) * k + (dp >> 24) * (1 - sa));
+        dst[X] = (A << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+      }
+    }
+  }
+  face.render(c, a);
+}
+
+void OnboardingView::draw_words(Canvas& c, int pg, double ox, double a, double now) {
+  if (a <= 0.003) return;
   const Palette& p = P();
   const Lay& L = L_[pg];
   const double W = w / s;
-  const double CW = std::min(W - 32, 560.0);
+  const double CW = std::max(40.0, std::min(W - 32, 560.0));
   auto center_text = [&](const std::string& t, int y, double ts, Rgb col, double al) {
     int tw = text_w(t, ts);
     text(c, t, (int)std::lround(w / 2.0 - tw / 2.0 + ox), y, ts, col, al);
   };
-  auto paragraph = [&](const char* body, int y, Rgb col, double al) {
-    for (auto& line : wrap_balanced(body, (int)(CW * 0.86 * s), s)) { center_text(line, y, s, col, al); y += (int)std::lround(13 * s); }
-    return y;
+  auto paragraph = [&](str::Id body, int y, Rgb col, double al) {
+    for (auto& line : wrap_balanced(tr(body), (int)(CW * 0.86 * s), s)) { center_text(line, y, s, col, al); y += (int)std::lround(13 * s); }
   };
-  double t = now - t0_;
+  const double t = now - t0_;
+  const double hs = 2 * s;
   if (pg == 0) {
-    // the bucket comes up from below on a spring, then the words are typed
-    int by = L.bucket_y + (int)std::lround(bucket_.x * L.bucket_cell * s);
-    double ba = a * ease_k((t - 0.35) / 0.2);
-    if (ba > 0) draw_bucket(c, (int)std::lround(L.bucket_x + ox), by, L.bucket_cell, ba);
-    for (auto& k : kernels_) {
-      double cell = L.bucket_cell * s;
-      double kx = L.bucket_x + ox + (kBucketW / 2.0 + k.x) * cell, ky = by + k.y * cell;
-      if (ky > L.next.y - 6 * s) continue;  // they fall out of sight before the footer
-      double ka = k.to_mouth ? 1.0 : std::min(1.0, (k.life - (now - k.t0)) / 0.3);
-      draw_kernel(c, kx, ky, L.bucket_cell, k.spin ^ ((int)((now - k.t0) / 0.09) & 1), a * std::max(0.0, ka));
-    }
+    // the greeting is typed, then its line comes in under it
     std::string head = tr(str::ob_intro);
     int n = cps(head);
     int shown = reduce_motion() ? n : std::clamp((int)std::floor((t - kIntroType) / kCharDur) + 1, 0, n);
     std::string part = first_cps(head, shown);
-    double hs = 2 * s;
     int tw = text_w(head, hs);
     int hx = (int)std::lround(w / 2.0 - tw / 2.0 + ox);
-    int pw = text(c, part, hx, L.text_y, hs, p.pixel, a);
+    int pw = text(c, part, hx, title_y_, hs, p.pixel, a);
     double done_at = kIntroType + n * kCharDur;
     // a caret while typing, blinking a moment after
     bool caret = t >= kIntroType - 0.3 && (t < done_at || (t < done_at + 0.9 && std::fmod(t - done_at, 0.45) < 0.24));
     if (caret && !reduce_motion())
-      c.fill(hx + pw + (int)std::lround(2 * s), L.text_y + (int)std::lround(4 * hs / 2), (int)std::lround(hs * 1.5),
+      c.fill(hx + pw + (int)std::lround(2 * s), title_y_ + (int)std::lround(4 * hs / 2), (int)std::lround(hs * 1.5),
              (int)std::lround(hs * 7), p.dim, a);
-  } else if (pg == 1) {
-    draw_demo(c, L.demo, ox, a, now, 1);
-    center_text(tr(str::ob_ambient_title), L.heading.y, 2 * s, p.pixel, a);
-    paragraph(tr(str::ob_ambient_line), L.text_y, p.dim, a);
+    double la = reduce_motion() ? 1.0 : ease_k((t - done_at - 0.15) / 0.35);
+    if (la > 0) paragraph(kLines[0], line_y_ + (int)std::lround((1 - la) * 3) * (int)s, p.dim, a * la);
+  } else {
+    center_text(tr(kTitles[pg]), title_y_, hs, p.pixel, a);
+    paragraph(kLines[pg], line_y_, p.dim, a);
+  }
+  if (pg == 1) {
     Rect tgl = L.toggle;
     tgl.x += (int)std::lround(ox);
-    draw_toggle(c, tgl, a);
+    draw_toggle(c, tgl, a, scene_ink(now));
     double kc = clamp01(knob_.x);
     int lx = tgl.r() + (int)std::lround(8 * s), ly = tgl.y + (int)std::lround(3 * s);
     // the label crossfades with the knob
     text(c, tr(str::ob_on), lx, ly, s, p.fg, a * kc);
     text(c, tr(str::ob_off), lx, ly, s, mix(p.dim, p.fg, hov(kToggle)), a * (1 - kc));
-  } else if (pg == 3) {
-    center_text(tr(str::ob_next_title), L.heading.y, 2 * s, p.pixel, a);
-    draw_upcoming(c, ox, a, now);
-  } else {
-    Rect dr = L.dock;
-    dr.x += (int)std::lround(ox);
-    draw_dock_sample(c, dr, a, now);
-    center_text(tr(str::ob_size_title), L.heading.y, 2 * s, p.pixel, a);
+  } else if (pg == 2) {
     // the selector: a sliding highlight behind the chosen size
     Rect hl{(int)std::lround(seg_x_.x + ox), L.segs[0].y, (int)std::lround(seg_w_.x), L.segs[0].h};
     c.cornered(hl, (int)s, p.press, a);
@@ -888,82 +801,6 @@ void OnboardingView::render_page(Canvas& c, int pg, double ox, double a, double 
            i == sel ? p.pixel : mix(p.dim, p.fg, hv), a);
     }
   }
-  // footer buttons belong to the page (they crossfade with it, but do not slide)
-  draw_button(c, L.back, tr(pg == 0 ? str::ob_skip : str::ob_back), false, hov(pg == 0 ? kSkip : kBack), a, false);
-  draw_button(c, L.next, tr(pg == kPages - 1 ? str::ob_start : str::ob_continue), true, hov(kNext), a, true);
-}
-
-void OnboardingView::draw_upcoming(Canvas& c, double ox, double a, double now) {
-  const Palette& p = P();
-  const Lay& L = L_[3];
-  int ic = icon_cell(s);
-  double since = now - page_enter_;
-  for (int i = 0; i < 3 && i < (int)L.items.size(); ++i) {
-    const Upcoming& it = kUpcoming[i];
-    // rows arrive one after the other, rising 6 px of art
-    double k = reduce_motion() || page_ != 3 ? 1.0 : ease_out(clamp01((since - 0.10 - 0.08 * i) / 0.34));
-    double ra = a * k;
-    if (ra <= 0.003) continue;
-    Rect r = L.items[i];
-    r.x += (int)std::lround(ox);
-    r.y += (int)std::lround((1 - k) * 6 * s);
-    bool next = i == 0;  // the next build stands out; later things are quieter
-    Rgb ink = next ? p.fg : p.dim;
-    // the icon, centred in its box and on the row, its signal lighting up in turn
-    int c0 = kIconCols, c1 = 0;
-    for (int yy = 0; yy < kIconRows; ++yy)
-      for (int xx = 0; xx < kIconCols; ++xx)
-        if (kIcons[it.icon][yy][xx] != '.') { c0 = std::min(c0, xx); c1 = std::max(c1, xx); }
-    int ix = r.x + (kIconCols - (c1 - c0 + 1)) * ic / 2 - c0 * ic;
-    int iy = r.y + (r.h - kIconRows * ic) / 2;
-    double cyc = std::fmod(std::max(0.0, now) * (next ? 1.4 : 1.0) + i * 0.37, 1.0);
-    for (int yy = 0; yy < kIconRows; ++yy)
-      for (int xx = 0; xx < kIconCols; ++xx) {
-        char ch = kIcons[it.icon][yy][xx];
-        if (ch == '.') continue;
-        double ca = 1.0;
-        if (ch >= '1' && ch <= '3') {
-          int g = ch - '1';  // 1, 2, 3: each arc lights up a beat after the last
-          double ph = cyc * 4 - g;
-          ca = reduce_motion() ? 0.8 : 0.25 + 0.75 * clamp01(ph < 0 ? 0 : ph < 1.6 ? 1 : 0);
-        } else if (ch == 'c') {
-          ca = reduce_motion() || std::fmod(now, 1.0) < 0.55 ? 1.0 : 0.0;
-        }
-        if (ca <= 0) continue;
-        c.fill(ix + xx * ic, iy + yy * ic, ic, ic, ink, ra * ca);
-      }
-    if (it.icon == 0) {
-      // the phone's screen: the remote in the hand, play and pause in turn
-      int sx = ix + 4 * ic, sy = iy + 4 * ic;
-      bool playing = reduce_motion() || std::fmod(now, 2.4) < 1.2;
-      if (playing) { c.fill(sx, sy, ic, 5 * ic, ink, ra); c.fill(sx + ic, sy + ic, ic, 3 * ic, ink, ra); c.fill(sx + 2 * ic, sy + 2 * ic, ic, ic, ink, ra); }
-      else { c.fill(sx, sy, ic, 5 * ic, ink, ra); c.fill(sx + 2 * ic, sy, ic, 5 * ic, ink, ra); }
-    }
-    // words, centred on the row: title and its ripeness tag, then the description
-    int n = i < (int)L.item_lines.size() ? L.item_lines[i] : 1;
-    int block = (int)std::lround((kTitleH + kLineH * n - 3) * s);
-    int tx = r.x + (int)std::lround((kIconCols * ic / s + kIconGap) * s);
-    int ty = r.y + (r.h - block) / 2 + (int)std::lround(3 * s);
-    int tw = text(c, tr(it.title), tx, ty, s, next ? p.pixel : p.fg, ra);
-    // the tag is a small button-sized pill: 16 art px tall, text 3 px from its top (room for descenders)
-    int gx = tx + tw + (int)std::lround(8 * s);
-    int gw = text_w(tr(it.tag), s) + (int)std::lround(12 * s), gh = (int)std::lround(16 * s);
-    int gy = ty - (int)std::lround(3 * s);
-    if (gx + gw > r.r()) { gx = tx; gy += (int)std::lround(kLineH * s); }  // no room beside the title: under it
-    Rect tag{gx, gy, gw, gh};
-    int tag_ty = gy + (int)std::lround(3 * s);
-    int pad = (int)std::lround(6 * s);
-    if (next) {
-      c.cornered(tag, (int)s, p.fg, ra);
-      text(c, tr(it.tag), gx + pad, tag_ty, s, p.bg, ra);
-    } else {
-      c.cornered(tag, (int)s, p.faint, ra * 0.55);
-      c.cornered(tag.inset((int)std::max(1.0, std::round(s))), (int)s, p.bg, ra);
-      text(c, tr(it.tag), gx + pad, tag_ty, s, p.dim, ra);
-    }
-    int ly = tag_ty + (int)std::lround(kTitleH * s);
-    for (auto& line : wrap_text(tr(it.line), r.r() - tx, s)) { text(c, line, tx, ly, s, p.dim, ra * (next ? 1.0 : 0.85)); ly += (int)std::lround(kLineH * s); }
-  }
 }
 
 void OnboardingView::draw_footer(Canvas& c, double a, double now) {
@@ -971,13 +808,13 @@ void OnboardingView::draw_footer(Canvas& c, double a, double now) {
   const Palette& p = P();
   const Lay& L = L_[page_];
   for (int i = 0; i < kPages; ++i) {
-    // the current page's dot stretches into a dash (and slides there on a spring)
+    // the current page's marker stretches into a dash (and slides there on a spring)
     double on = clamp01(1 - std::fabs(i - dot_.x));
-    double dw = (2 + 4 * on) * s, dh = 2 * s;
+    double dw = std::round(4 + 10 * on) * s, dh = 2 * s;
     const Rect& r = L.dots[i];
     double cx = r.x + r.w / 2.0;
     double hv = hov(kDot0 + i);
-    c.fill(cx - dw / 2, r.y + (r.h - dh) / 2, dw, dh, mix(mix(p.faint, p.dim, hv), p.fg, on), a);
+    c.fill(std::round(cx - dw / 2), r.y + (r.h - dh) / 2, dw, dh, mix(mix(p.faint, p.dim, hv), p.fg, on), a);
   }
 }
 
@@ -985,45 +822,108 @@ void OnboardingView::render(Canvas& c, double now) {
   const Palette& p = P();
   if (c.w != w || c.h != h) c.resize(w, h);
   c.clear(p.bg);
-  double t0 = now - t0_;
-  double face_a = reduce_motion() ? 1.0 : ease_k((t0 - 0.1) / 0.3);
-  face.now_hint = now;
-  double fade = finish_t0_ > 0 ? 1 - ease_k((now - finish_t0_) / 0.22) : 1.0;
+  const double t = now - t0_;
+  const double u = clamp01(pos_.x);  // 0 the eyes .. 1 the scene
+  // the end: from the first screen the words and the light fade while the eyes fly home; from the
+  // others everything goes dark before the home opens through the iris
+  const double fade = finish_t0_ > 0 ? 1 - ease_k((now - finish_t0_) / (face_handoff_ ? 0.22 : kDarkDur)) : 1.0;
   auto alpha_of = [&](int pg) {
-    // the page leaving fades quickly, the one arriving takes over: they barely overlap
+    // the page leaving is gone before the one arriving shows: their words never overlap
     double d = std::fabs(pg - pos_.x);
-    return d >= 1 ? 0.0 : ease_out(clamp01(1 - d * 1.7));
+    return d >= 1 ? 0.0 : ease_out(clamp01(1 - d * 2.0));
   };
-  for (int pg = 0; pg < kPages; ++pg) render_page(c, pg, (pg - pos_.x) * 56 * s, alpha_of(pg) * fade, now, 0);
-  double t = now - t0_;
-  double intro_in = reduce_motion() ? 1.0 : ease_k((t - kIntroType - cps(tr(str::ob_intro)) * kCharDur - 0.2) / 0.4);
+  const double intro = reduce_motion() ? 1.0 : ease_k((t - 0.1) / 0.45);
+
+  // 1 · the light behind the eyes; it gives way to the scene's as the eyes close
+  {
+    const double la = (1 - smoothstep(0.05, 0.75, u)) * intro * fade;
+    if (la >= 0.999 && eye_light_base_.w == eye_light_r_.w) paste(c, eye_light_base_, eye_light_r_.x, eye_light_r_.y);
+    else if (la > 0.003) c.blit(eye_light_, eye_light_r_.x, eye_light_r_.y, la);
+  }
+  // 2 · the scene's own light, inside the window when it is maximized (otherwise the real halo)
+  if (light_inside && finish_t0_ < 0) {
+    const double ga = clamp01(glow_.x) * clamp01(1 - std::fabs(pos_.x - 1) * 1.7) * fade;
+    if (ga > 0.003) {
+      const Mood m = mood(now);
+      // (made again only when its colours moved a visible step: a mood turning is a dozen
+      // makings, not one per picture of the scene)
+      auto q = [](uint8_t v) { return (uint64_t)(v >> 3); };
+      const uint64_t key = (q(m.glow_top.r) << 40) ^ (q(m.glow_top.g) << 32) ^ (q(m.glow_top.b) << 24) ^ (q(m.glow_bot.r) << 16) ^
+                           (q(m.glow_bot.g) << 8) ^ q(m.glow_bot.b) ^ ((uint64_t)box_.w << 48);
+      if (key != scene_light_key_) {
+        scene_light_key_ = key;
+        const int reach = std::max(4, (int)std::lround(box_.w * 0.16));
+        scene_light_r_ = {box_.x - reach, box_.y - reach, box_.w + 2 * reach, box_.h + 2 * reach};
+        const Rgb corner[4] = {m.glow_top, m.glow_top, m.glow_bot, m.glow_bot};
+        rect_light(scene_light_, scene_light_r_.w, scene_light_r_.h, {reach, reach, box_.w, box_.h}, reach, corner,
+                   1.1 * kDemoStrength);  // (as strong as the halo outside: 0.55 was drawn for 50%)
+      }
+      c.blit(scene_light_, scene_light_r_.x, scene_light_r_.y, ga);
+    }
+  }
+  // 3 · the scene (it stays put between the second and third screens), and the controls over it
+  {
+    const double sa = (pos_.x < 1 ? smoothstep(0.3, 0.9, u) : 1.0) * fade;
+    draw_scene(c, box_, sa, now, false);
+    const double pa = clamp01(1 - std::fabs(pos_.x - 1) * 1.7) * sa;
+    if (pa > 0.003) {
+      // its progress line belongs to the second screen (the third shows the controls' own)
+      const int cell = std::max(1, (int)std::lround(box_.w / 96.0));
+      const int ly = box_.b() - 2 * cell, lx0 = box_.x + 2 * cell, lw = box_.w - 4 * cell;
+      const int played = (int)((lw * (0.18 + 0.7 * std::fmod(scene_time(now) / 24.0, 1.0))) / cell) * cell;
+      c.fill(lx0, ly, lw, std::max(1, cell / 2), p.pixel, pa * 0.25);
+      c.fill(lx0, ly, played, std::max(1, cell / 2), p.pixel, pa * 0.85);
+    }
+    // a new size: the controls crossfade from the one before (both at their own hard pixel)
+    const double ca = alpha_of(2) * fade;
+    const int cur = std::clamp(scale_index(), 0, kUiSizes - 1);
+    const double sk = reduce_motion() ? 1.0 : ease_k((now - scale_t_) / kScaleFade);
+    if (sk < 1 && prev_scale_idx_ >= 0 && prev_scale_idx_ != cur) {
+      draw_controls(c, box_, ca * (1 - sk), prev_scale_idx_);
+      draw_controls(c, box_, ca * sk, cur);
+    } else {
+      draw_controls(c, box_, ca, cur);
+    }
+  }
+  // 4 · the words, sliding a little with their page
+  const double foot_in = reduce_motion() ? 1.0 : ease_k((t - kFootIn) / 0.4);
   for (int pg = 0; pg < kPages; ++pg) {
     double d = pg - pos_.x;
     if (std::fabs(d) >= 1) continue;
-    double a = alpha_of(pg) * fade;
-    if (pg == 0 && page_ == 0) {
-      // the first screen's footer waits for the greeting
-      double ox = d * 56 * s;
-      render_page(c, pg, ox, a, now, 1);
-      if (intro_in < 1) {
-        // redraw the footer region over with the background, to fade the buttons in
-        const Lay& L = L_[0];
-        Rect band{0, L.next.y - (int)s, w, L.next.h + 2 * (int)s};
-        c.fill(band, p.bg, 1 - intro_in);
-      }
-      continue;
+    draw_words(c, pg, d * 28 * s, alpha_of(pg) * fade, now);
+  }
+  // the footer stands still: its buttons change shape and words between pages, never fly
+  {
+    const double fx = std::clamp(pos_.x, 0.0, kPages - 1.0);
+    const int p0 = std::min(kPages - 2, (int)std::floor(fx)), p1 = p0 + 1;
+    const double f = clamp01(fx - p0), fl = smoothstep(0.2, 0.8, f);
+    auto lerp_r = [&](const Rect& a, const Rect& b) {
+      return Rect((int)std::lround(a.x + (b.x - a.x) * f), a.y, (int)std::lround(a.w + (b.w - a.w) * f), a.h);
+    };
+    const double ba = fade * foot_in;
+    const Rect nb = lerp_r(L_[p0].next, L_[p1].next), bb = lerp_r(L_[p0].back, L_[p1].back);
+    auto next_l = [](int pg) { return tr(pg == kPages - 1 ? str::ob_start : str::ob_continue); };
+    auto back_l = [](int pg) { return tr(pg == 0 ? str::ob_skip : str::ob_back); };
+    const double hn = hov(kNext), hb = std::max(hov(kSkip), hov(kBack));
+    // one plate each; the labels crossfade over it
+    const Palette& pp = P();
+    if (ba > 0.003) {
+      c.cornered(nb, (int)s, mix(pp.hover, pp.press, hn), ba);
+      if (hb > 0) c.cornered(bb, (int)s, pp.hover, ba * hb);
     }
-    render_page(c, pg, d * 56 * s, a, now, 1);
+    // (the same word on both pages is drawn once: two half-faded copies would dim it midway)
+    auto labels = [&](const Rect& r, const std::string& l0, const std::string& l1, bool primary, double hv) {
+      if (l0 == l1) { draw_button(c, r, l0, primary, hv, ba, primary, true); return; }
+      draw_button(c, r, l0, primary, hv, ba * (1 - fl), primary, true);
+      draw_button(c, r, l1, primary, hv, ba * fl, primary, true);
+    };
+    labels(nb, next_l(p0), next_l(p1), true, hn);
+    labels(bb, back_l(p0), back_l(p1), false, hb);
   }
-  draw_footer(c, fade * (page_ == 0 && pos_.x < 0.5 ? intro_in : 1.0), now);
+  draw_footer(c, fade * foot_in, now);
   chrome.draw(c, w);
-  // the character belongs to the first screen: it slides and fades with it, and only flies
-  // to the home when the welcome ends while it is on screen
-  double fa = finish_t0_ > 0 ? (face_handoff_ ? 1.0 : 0.0) : face_a * alpha_of(0);
-  if (fa > 0.003) {
-    double keep = face.cx;
-    if (finish_t0_ < 0) face.cx += (0 - pos_.x) * 56 * s;
-    face.render(c, fa);
-    face.cx = keep;
-  }
+  // 5 · the character belongs to the first screen: it closes its eyes on the way to the scene,
+  // and only flies to the home when the welcome ends while it is on screen
+  double fa = finish_t0_ > 0 ? (face_handoff_ ? 1.0 : 0.0) : intro * (1 - smoothstep(0.2, 0.6, u));
+  if (fa > 0.003) draw_eyes(c, fa, now);
 }

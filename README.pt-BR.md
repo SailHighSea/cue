@@ -1,12 +1,30 @@
-![Cue](docs/cue-banner.png)
+<p align="center">
+  <img src="docs/readme/hero.pt-BR.png" alt="Cue reproduzindo um vídeo, com a luz ambiente brilhando ao redor da janela" width="100%">
+</p>
 
-# Cue · .tinypeep
+<h1 align="center">Cue</h1>
 
-**O vídeo é a interface.**
+<p align="center">
+  <b>O vídeo é a interface.</b><br>
+  Um player de vídeo e áudio gratuito e de código aberto para Windows. Leve, local e feito para deixar o conteúdo em primeiro plano.
+</p>
 
-Um player de vídeo e áudio gratuito e de código aberto para Windows. Leve, local e feito para deixar o conteúdo em primeiro plano.
+<div align="center">
 
 **[Baixar Cue](https://github.com/tinypeep/cue/releases/latest)** · [English](README.md) · [Histórico de versões](docs/CHANGELOG.md) · [Manifesto](MANIFESTO.pt-BR.md)
+
+</div>
+
+<p align="center">
+  <img src="docs/readme/light.pt-BR.png" alt="Luz que acompanha a cena: iluminação ambiente, direto do vídeo." width="100%">
+</p>
+<p align="center">
+  <img src="docs/readme/music.pt-BR.png" alt="Música também fica bonita: capa e espectro em pixels." width="49.2%">
+  <img src="docs/readme/remote.pt-BR.png" alt="Seu celular é o controle: leia um QR code, sem instalar app." width="49.2%">
+</p>
+<p align="center">
+  <img src="docs/readme/mini.pt-BR.png" alt="Mini player: continue assistindo enquanto trabalha." width="100%">
+</p>
 
 ## Feito para assistir
 
@@ -21,7 +39,7 @@ Um player de vídeo e áudio gratuito e de código aberto para Windows. Leve, lo
 
 ## Comece aqui
 
-Baixe `Cue-1.3.2-Setup.exe` na [última release](https://github.com/tinypeep/cue/releases/latest) e execute. **Windows x64.** Não exige administrador.
+Baixe `Cue-1.4-Setup.exe` na [última release](https://github.com/tinypeep/cue/releases/latest) e execute. **Windows x64.** Não exige administrador.
 
 Abra um arquivo, arraste para o Cue ou use **Abrir com** no Explorador de Arquivos.
 
@@ -30,6 +48,7 @@ Abra um arquivo, arraste para o Cue ou use **Abrir com** no Explorador de Arquiv
 | Espaço | Reproduzir / pausar |
 | F ou duplo clique | Tela cheia |
 | ← / → | Voltar / avançar 5 segundos |
+| Page Up / Page Down | Capítulo anterior / próximo |
 | 0–9 | Ir para 0–90% do vídeo (player principal) |
 | C | Controles de legenda |
 | N / P | Próximo arquivo, quando o Cue encontrar um / arquivo anterior da fila |
@@ -57,6 +76,6 @@ A tradução em russo foi revisada com a ajuda de [omni38](https://github.com/om
 
 O código do Cue usa **GPL-3.0-or-later**. Fontes e componentes de terceiros mantêm suas próprias licenças. Veja [LICENSE](LICENSE), [autoria](COPYRIGHT.md) e [licenças dos componentes](docs/LICENSES.md).
 
-As fontes correspondentes ao motor estão em `Cue-1.3.2-Engine-Source.zip`, na [página da versão](https://github.com/tinypeep/cue/releases/tag/v1.3.2).
+As fontes correspondentes ao motor estão em `Cue-1.4-Engine-Source.zip`, na [página da versão](https://github.com/tinypeep/cue/releases/tag/v1.4).
 
 Forks e versões modificadas: [NOTICE](NOTICE.md) · [Identidade e branding](docs/BRANDING.md).

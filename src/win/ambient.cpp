@@ -1,5 +1,7 @@
 #include "ambient.h"
+#include "platform.h"
 #include "../ui/ambient_raster.h"
+#include "../ui/ambient_ring.h"
 
 #include <dwmapi.h>
 
@@ -25,6 +27,11 @@ bool Ambient::create(HINSTANCE inst) {
     s.wnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"",
                             WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, inst, nullptr);
     if (!s.wnd) { destroy(); failed_ = true; return false; }
+    // (15/11: shown and hidden at once, its own fade does the rest. Windows faded a hidden strip
+    // out where it was: a film's halo hidden as the window glided home stayed behind it, a dark
+    // block the old window's size fading over the desktop)
+    BOOL off = TRUE;
+    DwmSetWindowAttribute(s.wnd, DWMWA_TRANSITIONS_FORCEDISABLED, &off, sizeof off);
   }
   return true;
 }
@@ -59,7 +66,9 @@ void Ambient::reset() {
   // A transient layered-window error must not disable the next video forever.
   if (failed_) { destroy(); failed_ = false; }
   want_ = false;
-  alpha_ = 0;
+  reveal_.cut();
+  next_out_ = -1;
+  remap_on_ = painted_remap_on_ = false;
   last_a_ = -1;
   colors_dirty_ = true;
   since_paint_ = 1;
@@ -98,6 +107,20 @@ void Ambient::build_shape(const RECT& r, int dpi) {
   since_build_ = 0;
   rebuild_pending_ = false;
   const double P = 2.0 * (ww + wh);
+  // a soft light: strong at the edge, fading like a lamp on a wall, ending at zero. Its alpha by
+  // the squared distance, looked up: a 4K window's halo is about two million pixels, and this
+  // used to cost a root and an exponential each (tens of ms, felt as a hitch when it first lit)
+  constexpr int kFall = 4096;
+  static uint8_t fall[kFall + 1];
+  static bool fall_made = false;
+  if (!fall_made) {
+    for (int i = 0; i <= kFall; ++i) {
+      const double qq = (double)i / kFall, u = std::sqrt(qq);
+      fall[i] = (uint8_t)std::lround(std::exp(-2.8 * qq) * (1 - u) * 235);
+    }
+    fall_made = true;
+  }
+  const double inv_m2 = 1.0 / ((double)M_ * M_);
   for (int k = 0; k < 4; ++k) {
     Strip& s = st_[k];
     if (s.fw <= 0 || s.fh <= 0 || s.fw > 65535 || s.fh > 65535) continue;
@@ -106,9 +129,9 @@ void Ambient::build_shape(const RECT& r, int dpi) {
       for (int lx = 0; lx < s.fw; ++lx) {
         int x = s.fx + lx, y = s.fy + ly;
         int qx = std::clamp(x, M_, M_ + ww - 1), qy = std::clamp(y, M_, M_ + wh - 1);
-        double dx = x - qx, dy = y - qy;
-        double u = std::sqrt(dx * dx + dy * dy) / M_;
-        if (u >= 1) continue;
+        const double dx = x - qx, dy = y - qy;
+        double q = (dx * dx + dy * dy) * inv_m2;  // (the distance squared: no root per pixel)
+        if (q >= 1) continue;
         // Under the window: only the wedges its rounded corners leave open are lit, at full
         // edge strength and with their corner's colour; everything else is covered.
         double corner_p = -1;
@@ -119,11 +142,9 @@ void Ambient::build_shape(const RECT& r, int dpi) {
           double ox = x + 0.5 - cx, oy = y + 0.5 - cy;
           if (ox * ox + oy * oy <= (double)C_ * C_) continue;  // inside the arc: the window's own pixels
           corner_p = top ? (left ? 0.0 : ww - 1.0) : (right ? ww + wh - 1.0 : 2.0 * ww + wh - 1.0);
-          u = 0;
+          q = 0;
         }
-        // a soft light: strong at the edge, fading like a lamp on a wall, ending at zero
-        double f = std::exp(-2.8 * u * u) * (1 - u);
-        int a = (int)std::lround(f * 235);
+        const int a = fall[(int)(q * kFall)];
         if (a <= 1) continue;
         // which point of the window's edge this pixel faces, clockwise from the top-left corner
         double p;
@@ -202,46 +223,19 @@ bool Ambient::cut_surfaces(const RECT cut[4]) {
   return true;
 }
 
-// The zone colours spread around the edge, blended softly between zones (like the TV's LEDs).
+// The zone colours spread around the edge (see ambient_ring.h); only ramps whose colour changed are
+// rebuilt.
 void Ambient::build_lut() {
   if (tint_.empty()) tint_.resize(kLut * 256, 0);
-  int ww = rect_.right - rect_.left, wh = rect_.bottom - rect_.top;
-  double P = 2.0 * (ww + wh);
-  if (P <= 0) return;
-  double pos[kZones];
-  for (int i = 0; i < 8; ++i) pos[i] = (i + 0.5) / 8 * ww;
-  for (int i = 0; i < 5; ++i) pos[8 + i] = ww + (i + 0.5) / 5 * wh;
-  for (int i = 0; i < 8; ++i) pos[13 + i] = ww + wh + (i + 0.5) / 8 * ww;
-  for (int i = 0; i < 5; ++i) pos[21 + i] = 2.0 * ww + wh + (i + 0.5) / 5 * wh;
-  static double r[kLut], g[kLut], b[kLut], l[kLut];
+  static Rgb ring[kLut];
+  static uint8_t ring_a[kLut];
+  if (!ambient_ring(zone_, light_, rect_.right - rect_.left, rect_.bottom - rect_.top, ring, ring_a)) return;
   for (int k = 0; k < kLut; ++k) {
-    double p = (k + 0.5) / kLut * P;
-    int j = kZones - 1;
-    for (int z = 0; z < kZones; ++z) if (pos[z] <= p) j = z;
-    int n = (j + 1) % kZones;
-    double a = pos[j], bpos = n == 0 ? pos[0] + P : pos[n];
-    if (p < pos[0]) { a = pos[kZones - 1] - P; bpos = pos[0]; }  // wrapping past the top-left corner
-    double t = std::clamp((p - a) / std::max(1.0, bpos - a), 0.0, 1.0);
-    t = t * t * (3 - 2 * t);
-    r[k] = zone_[j].r + (zone_[n].r - zone_[j].r) * t;
-    g[k] = zone_[j].g + (zone_[n].g - zone_[j].g) * t;
-    b[k] = zone_[j].b + (zone_[n].b - zone_[j].b) * t;
-    l[k] = light_[j] + (light_[n] - light_[j]) * t;
-  }
-  // a little extra blur around the ring, so no zone has a hard border
-  static double tr[kLut], tg[kLut], tb[kLut], tl[kLut];
-  const int R = 10;
-  for (int k = 0; k < kLut; ++k) {
-    double sr = 0, sg = 0, sb = 0, sl = 0;
-    for (int d = -R; d <= R; ++d) { int q = (k + d + kLut) % kLut; sr += r[q]; sg += g[q]; sb += b[q]; sl += l[q]; }
-    tr[k] = sr / (2 * R + 1); tg[k] = sg / (2 * R + 1); tb[k] = sb / (2 * R + 1); tl[k] = sl / (2 * R + 1);
-  }
-  for (int k = 0; k < kLut; ++k) {
-    auto quantize = [](double v) { return (uint8_t)std::lround(std::clamp(v, 0.0, 255.0)); };
-    uint8_t nr = quantize(tr[k]), ng = quantize(tg[k]), nb = quantize(tb[k]), na = quantize(tl[k] * 255);
-    if (nr != lr_[k] || ng != lg_[k] || nb != lb_[k] || na != la_[k]) {
-      lr_[k] = nr; lg_[k] = ng; lb_[k] = nb; la_[k] = na;
-      ambient_ramp(nr, ng, nb, na, tint_.data() + k * 256);
+    const Rgb c = ring[k];
+    const uint8_t na = ring_a[k];
+    if (c.r != lr_[k] || c.g != lg_[k] || c.b != lb_[k] || na != la_[k]) {
+      lr_[k] = c.r; lg_[k] = c.g; lb_[k] = c.b; la_[k] = na;
+      ambient_ramp(c.r, c.g, c.b, na, tint_.data() + k * 256);
     }
   }
 }
@@ -263,6 +257,8 @@ void Ambient::place(HWND owner, bool show) {
 
 void Ambient::paint(HWND owner) {
   if (!built_) return;
+  LARGE_INTEGER q0, qf;
+  QueryPerformanceCounter(&q0);
   build_lut();
   bool needs_show = false;
   HDC screen = GetDC(nullptr);
@@ -273,10 +269,19 @@ void Ambient::paint(HWND owner) {
     // the surface is the strip's part on a screen: the shape's pixels off it are skipped
     const int ox = s.fx - s.x, oy = s.fy - s.y;
     const bool whole = ox == 0 && oy == 0 && s.w == s.fw && s.h == s.fh;
-    for (const Px& q : s.shape) {
-      const unsigned px = (unsigned)(q.x + ox), py = (unsigned)(q.y + oy);
-      if (!whole && (px >= (unsigned)s.w || py >= (unsigned)s.h)) continue;
-      s.bits[(size_t)py * s.w + px] = tint_[(size_t)q.lut * 256 + q.a];
+    if (remap_on_) {
+      // coming or going: each pixel's falloff through the reveal's table (one lookup more, only now)
+      for (const Px& q : s.shape) {
+        const unsigned px = (unsigned)(q.x + ox), py = (unsigned)(q.y + oy);
+        if (!whole && (px >= (unsigned)s.w || py >= (unsigned)s.h)) continue;
+        s.bits[(size_t)py * s.w + px] = tint_[(size_t)q.lut * 256 + remap_[q.a]];
+      }
+    } else {
+      for (const Px& q : s.shape) {
+        const unsigned px = (unsigned)(q.x + ox), py = (unsigned)(q.y + oy);
+        if (!whole && (px >= (unsigned)s.w || py >= (unsigned)s.h)) continue;
+        s.bits[(size_t)py * s.w + px] = tint_[(size_t)q.lut * 256 + q.a];
+      }
     }
     POINT dst{rect_.left - M_ + s.x, rect_.top - M_ + s.y}, src{0, 0};
     SIZE sz{s.w, s.h};
@@ -284,19 +289,46 @@ void Ambient::paint(HWND owner) {
   }
   ReleaseDC(nullptr, screen);
   if (needs_show) place(owner, true); // colour changes do not need another move/z-order batch
+  {
+    LARGE_INTEGER q1;
+    QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+    const double ms = (q1.QuadPart - q0.QuadPart) * 1000.0 / qf.QuadPart;
+    paint_ms_ = paint_ms_ > 0 ? paint_ms_ * 0.7 + ms * 0.3 : ms;
+  }
   last_a_ = blend();
+  painted_remap_on_ = remap_on_;
+  if (remap_on_) std::memcpy(painted_remap_, remap_, sizeof remap_);
   colors_dirty_ = false;
   since_paint_ = 0;
+  for (int k = 0; k < kZones; ++k) { painted_zone_[k] = zone_[k]; painted_light_[k] = light_[k]; }
+}
+
+int Ambient::ticks_for_change() const {
+  int d = 0;
+  double dl = 0;
+  for (int k = 0; k < kZones; ++k) {
+    const Rgb a = zone_[k], b = painted_zone_[k];
+    d = std::max({d, std::abs(a.r - b.r), std::abs(a.g - b.g), std::abs(a.b - b.b)});
+    dl = std::max(dl, std::fabs(light_[k] - painted_light_[k]) * 255);
+  }
+  if (d <= 1 && dl <= 1.5) return 3;
+  if (d <= 3 && dl <= 3.5) return 2;
+  return 1;
 }
 
 void Ambient::follow(HWND owner, bool defer_geometry) {
-  if (alpha_ <= 0.001 || !built_) return;
+  if (reveal_.phase == AmbientReveal::Off || !built_) return;
+  // minimized: the light goes in the same instant the window starts for the taskbar. (17/11, 12:01: a
+  // 0.25 s gathering-in stayed behind as a trail where the window had been, since Windows' animation
+  // takes the window away at once; and it painted all through that animation.) The shape is kept: the
+  // way back costs no rebuild (it used to be rebuilt for the taskbar button's little rectangle, and again)
+  if (IsIconic(owner)) { vanish(); return; }
   RECT r = visible_rect(owner);
   if (r.right - r.left != rect_.right - rect_.left || r.bottom - r.top != rect_.bottom - rect_.top) {
     // a new size: the halo of the old one would stay behind as a frame around nothing, so it
-    // goes at once; it is rebuilt for the new size and fades back in when the edge is let go
-    if (defer_geometry) { alpha_ = 0; hide(); last_a_ = -1; rebuild_pending_ = true; return; }
-    alpha_ = 0;
+    // goes at once; it is rebuilt for the new size and comes back in when the edge is let go
+    if (defer_geometry) { reveal_.cut(); hide(); last_a_ = -1; rebuild_pending_ = true; return; }
+    reveal_.cut();
     build_shape(r, GetDpiForWindow(owner));
     paint(owner);
     return;
@@ -328,16 +360,51 @@ void Ambient::follow(HWND owner, bool defer_geometry) {
   place(owner, false);
 }
 
-BYTE Ambient::blend() const { return (BYTE)std::lround(std::clamp(alpha_ * strength_, 0.0, 1.0) * 255); }
+BYTE Ambient::blend() const { return (BYTE)std::lround(std::clamp(reveal_.opacity() * strength_, 0.0, 1.0) * 255); }
+
+void Ambient::vanish() {
+  reveal_.cut();
+  next_out_ = -1;
+  remap_on_ = painted_remap_on_ = false;
+  last_a_ = -1;
+  hide();
+}
+
+// The usual exit, or the one asked for; minimized, Windows' own animation sets it (none: at once,
+// nearly: 0.1 s; never a glow where a window that is already gone was)
+void Ambient::begin_out(HWND owner) {
+  double len = AmbientReveal::kOut;
+  if (next_out_ >= 0) len = next_out_;
+  else if (owner && IsIconic(owner) && !system_window_animation()) len = 0.1;
+  next_out_ = -1;
+  reveal_.begin_out(len, motion_ && paint_ms_ < kOpacityOnlyMs);
+}
+
+// Made ahead, hidden: the windows and the shape for this size, so the first time the halo
+// lights costs only its colours (the welcome's second screen used to build it mid-slide).
+void Ambient::prepare(HWND owner, HINSTANCE inst) {
+  if (failed_ || reveal_.phase != AmbientReveal::Off || want_) return;
+  if (!create(inst)) return;
+  const RECT r = visible_rect(owner);
+  if (r.right - r.left <= 0 || r.bottom - r.top <= 0) return;
+  if (built_ && r.right - r.left == rect_.right - rect_.left && r.bottom - r.top == rect_.bottom - rect_.top) return;
+  build_shape(r, GetDpiForWindow(owner));
+}
+
+bool Ambient::prepared(HWND owner) const {
+  if (!built_ || failed_) return false;
+  const RECT r = visible_rect(owner);
+  return r.right - r.left == rect_.right - rect_.left && r.bottom - r.top == rect_.bottom - rect_.top;
+}
 
 bool Ambient::update(HWND owner, const Rgb* zones, const double* light, bool visible, double strength, double dt, bool defer_geometry) {
   if (!st_[0].wnd || failed_) return false;
   want_ = visible;
   strength_ = std::clamp(strength, 0.0, 1.0);
-  double target = visible && !defer_geometry ? 1.0 : 0.0;
-  double na = alpha_ + std::clamp(target - alpha_, -dt / 0.45, dt / 0.8);  // in slowly, out a bit faster
-  bool moving = std::fabs(na - alpha_) > 1e-4;
-  alpha_ = na;
+  // (17/11) in from the edge outward, out back into the window: see ambient_reveal.h
+  if (visible && !defer_geometry) reveal_.begin_in(motion_ && paint_ms_ < kOpacityOnlyMs);
+  else if (reveal_.phase == AmbientReveal::In || reveal_.phase == AmbientReveal::On) begin_out(owner);
+  const bool moving = reveal_.step(dt);
   since_paint_ += dt;
   for (int k = 0; k < kZones; ++k) {
     if (zones[k].r != zone_[k].r || zones[k].g != zone_[k].g || zones[k].b != zone_[k].b ||
@@ -347,39 +414,63 @@ bool Ambient::update(HWND owner, const Rgb* zones, const double* light, bool vis
       colors_dirty_ = true;
     }
   }
-  if (alpha_ <= 0.001) {
+  if (reveal_.phase == AmbientReveal::Off) {
     hide();
     last_a_ = -1;
+    remap_on_ = painted_remap_on_ = false;
     return moving;
   }
-  RECT r = visible_rect(owner);
-  if (!built_ || r.right - r.left != rect_.right - rect_.left || r.bottom - r.top != rect_.bottom - rect_.top) {
-    if (defer_geometry) {
-      rebuild_pending_ = true;
-      int a=blend();BLENDFUNCTION bf{AC_SRC_OVER,0,(BYTE)a,AC_SRC_ALPHA};
-      if(a!=last_a_)for(auto& strip:st_)if(strip.bits)UpdateLayeredWindow(strip.wnd,nullptr,nullptr,nullptr,nullptr,nullptr,0,&bf,ULW_ALPHA);
-      last_a_=a;return moving;
+  remap_on_ = reveal_.remapping();
+  if (remap_on_) reveal_.remap(remap_);
+  // going out, it stays where it lit (the window may already be on its way to the taskbar): no new
+  // shape, no new place; it only gathers in
+  if (reveal_.phase != AmbientReveal::Out && !IsIconic(owner)) {
+    RECT r = visible_rect(owner);
+    if (!built_ || r.right - r.left != rect_.right - rect_.left || r.bottom - r.top != rect_.bottom - rect_.top) {
+      if (defer_geometry) {
+        rebuild_pending_ = true;
+        int a=blend();BLENDFUNCTION bf{AC_SRC_OVER,0,(BYTE)a,AC_SRC_ALPHA};
+        if(a!=last_a_)for(auto& strip:st_)if(strip.bits)UpdateLayeredWindow(strip.wnd,nullptr,nullptr,nullptr,nullptr,nullptr,0,&bf,ULW_ALPHA);
+        last_a_=a;return moving;
+      }
+      build_shape(r, GetDpiForWindow(owner));
+      paint(owner);
+      return moving;
     }
-    build_shape(r, GetDpiForWindow(owner));
-    paint(owner);
-    return moving;
-  }
-  rect_ = r;
-  since_build_ += dt;
-  if (rebuild_pending_ && since_build_ > 0.15 && !defer_geometry && !held_) {  // (never mid-drag: when it is let go)
-    // the same shape, cut again to what the screens show now (the costly shape is not redone)
-    RECT cut[4];
-    layout_cut(r, cut);
-    since_build_ = 0;
-    if (cut_surfaces(cut)) { paint(owner); place(owner, false); }
-    return moving;
+    // lit again after a while hidden (or made ahead, see prepare): the window may have moved
+    // meanwhile, so its surfaces may not hold all of the halo where it is now
+    if (last_a_ < 0 && !defer_geometry) {
+      RECT cut[4];
+      layout_cut(r, cut);
+      if (!covers(cut)) cut_surfaces(cut);
+    }
+    rect_ = r;
+    since_build_ += dt;
+    if (rebuild_pending_ && since_build_ > 0.15 && !defer_geometry && !held_) {  // (never mid-drag: when it is let go)
+      // the same shape, cut again to what the screens show now (the costly shape is not redone)
+      RECT cut[4];
+      layout_cut(r, cut);
+      since_build_ = 0;
+      if (cut_surfaces(cut)) { paint(owner); place(owner, false); }
+      return moving;
+    }
   }
   int a = blend();
   // T_POLL is 33 ms: allow timer jitter rather than accidentally painting every
   // second tick when 33 ms falls just short of 33.333 ms.
   // (hidden, its colours the same: painted anyway, since painting is what shows the strips. A
   // paused film turned the light off and on again used to keep it hidden until the next frame)
-  if ((colors_dirty_ && since_paint_ >= 1.0 / 30 - 0.002) || last_a_ < 0) paint(owner);
+  // (a small change: painted with the next one, or after a tick or two; see painted_zone_)
+  // (coming or going: the levels shown change on most ticks; like a colour, a step of one 8-bit level
+  // at most waits for the next, a step of up to three for one more tick; larger, on every tick)
+  int ticks = colors_dirty_ ? ticks_for_change() : 4;
+  if (remap_on_ != painted_remap_on_) ticks = 1;
+  else if (remap_on_) {
+    int d = 0;
+    for (int m = 0; m < 256; ++m) d = std::max(d, std::abs((int)remap_[m] - (int)painted_remap_[m]));
+    if (d > 0) ticks = std::min(ticks, d <= 1 ? 3 : d <= 3 || paint_ms_ >= kHalfRateMs ? 2 : 1);
+  }
+  if ((ticks < 4 && since_paint_ >= ticks / 30.0 - 0.002) || last_a_ < 0) paint(owner);
   else if (a != last_a_) {
     // only the fade changed: no new pixels, just the strips' overall opacity
     BLENDFUNCTION bf{AC_SRC_OVER, 0, (BYTE)a, AC_SRC_ALPHA};

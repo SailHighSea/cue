@@ -20,8 +20,10 @@ int main(){
   assert(layer.x>=0&&layer.x+layer.c.w<=width*scale);
   assert(layer.c.px[(size_t)(layer.c.h/2)*layer.c.w+2]==0); // no card fill
   if(width>=640)assert(layer.c.w>original);
-  for(auto pixel:layer.c.px){unsigned alpha=pixel>>24;if(alpha==255) assert(pixel==0xffffffffu);
+  int white=0;  // (16/11: the quiet buttons rest grey, the playback and times stay white; never a colour)
+  for(auto pixel:layer.c.px){unsigned alpha=pixel>>24;if(pixel==0xffffffffu)++white;(void)alpha;
     assert(((pixel>>16)&255)==((pixel>>8)&255)&&((pixel>>8)&255)==(pixel&255));}
+  assert(white>0);
   auto neutral=layer.c.px;
   p.in.accent={100,180,210};p.in.accent_k=1;p.changed(t);settle(p,t);assert(neutral==layer.c.px);
   // Soft shadow belongs only to the ink; the corners have no panel fill.
@@ -37,8 +39,8 @@ int main(){
   p.take_actions();for(int i=0;i<20;++i)p.key("down",false,false,t);
   for(int i=0;i<20&&p.pfocus_>=0&&p.rows_[p.pfocus_].id!=PlayView::R_CONTROLS_FREE&&p.rows_[p.pfocus_].id!=PlayView::R_INTERFACE;++i)p.key("up",false,false,t);
   if(p.rows_[p.pfocus_].id==PlayView::R_INTERFACE){p.key("enter",false,false,t);settle(p,t);for(int i=0;i<20;++i)p.key("down",false,false,t);}
-  assert(p.rows_[p.pfocus_].id==PlayView::R_CONTROLS_FREE);
-  p.key("right",false,false,t);
+  assert(p.rows_[p.pfocus_].id==PlayView::R_CONTROLS_FREE&&p.rows_[p.pfocus_].k==PlayView::RK::Toggle);
+  p.key("enter",false,false,t);  // (16/11: a switch, as the others: Enter turns it; on = with the background)
   bool selected=false;for(auto a:p.take_actions())if(a.a==PA::ControlsFree&&a.v==1)selected=true;assert(selected);
  }
  for(bool audio:{false,true}){PlayView p;p.in.audio_only=audio;p.in.audios={{1,"audio"},{2,"audio"}};p.resize(480,360,2);double t=1;p.reset(t);p.open_panel_for_preview(3,t);settle(p,t);auto& menu=p.layers[PlayView::L_PANEL];assert(menu.y>=0&&menu.y+menu.c.h<=360);}

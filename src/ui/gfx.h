@@ -2,6 +2,7 @@
 // Art-pixel geometry accepts half steps for the medium size. Cell boundaries
 // snap to physical pixels; integer scales stay uniform, with no image filtering.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <string>
@@ -24,6 +25,9 @@ struct Palette {
       dim{120, 120, 120}, fg{237, 237, 237}, pixel{255, 255, 255};
 };
 const Palette& P();
+// Where there is no film to lend its colour (the welcome, the home), a state that is on (a switch,
+// a value changed) takes this warm peach instead.
+constexpr Rgb kPeach{247, 186, 140};
 void set_high_contrast(bool on);
 
 namespace tok {
@@ -58,6 +62,20 @@ const MaskDef* label_mask(std::string_view label, double s);  // pre-rasterized 
 struct Canvas {
   int w = 0, h = 0;
   std::vector<uint32_t> px;
+  // An optional clip: every drawing call (and clear) touches only pixels inside it. The home uses
+  // it to draw again only the eyes' corner of the window when nothing else changed: the same
+  // drawing code, the same pixels there, nothing outside touched (tests/home_partial_test.cpp).
+  Rect clip{};
+  bool clipped = false;
+  void set_clip(const Rect& r) { clip = r; clipped = true; }
+  void reset_clip() { clipped = false; }
+  // the pixels drawing may touch: the canvas, within the clip when there is one
+  void reach(int& x0, int& y0, int& x1, int& y1) const {
+    x0 = 0; y0 = 0; x1 = w; y1 = h;
+    if (!clipped) return;
+    x0 = std::max(x0, clip.x); y0 = std::max(y0, clip.y);
+    x1 = std::min(x1, clip.x + clip.w); y1 = std::min(y1, clip.y + clip.h);
+  }
 
   void resize(int nw, int nh);
   void clear(Rgb c, double a = 1.0);
@@ -74,10 +92,25 @@ struct Canvas {
   // Copies `src` over this canvas at (x, y) with src-over.
   void blit(const Canvas& src, int x, int y, double a = 1.0);
   void scale_alpha(double a);
+  // this canvas becomes src with its alpha scaled by a, in one pass (a copy, then scale_alpha,
+  // went over a fading 4K list twice a frame); the same rounding as scale_alpha
+  void assign_scaled(const Canvas& src, double a);
 };
+
+// Source-over of one premultiplied BGRA pixel, as the canvas draws it (the fast path when the
+// source is premultiplied) and the plain per-channel reference: tests compare the two.
+uint32_t blend_over_for_tests(uint32_t src, uint32_t dst);
+uint32_t blend_over_reference_for_tests(uint32_t src, uint32_t dst);
 
 // Supplied action SVGs use a half-art-pixel grid; center their visible ink.
 void action_icon(Canvas& c, std::string_view name, const Rect& box, double s, Rgb colour, double alpha = 1.0);
+
+// The switch: 14 x 8 cells of `cell` px (stepped corners), a square knob that slides on its
+// spring. k: the knob's place, 0 off .. 1 on (a hair past either end while it overshoots). On, the
+// track takes `on` (the film's colour) and the knob is a black stone with a small tick beside it;
+// off, an outlined track with a grey knob. One drawing for the welcome and the player's menus.
+void draw_switch(Canvas& c, double x, double y, double cell, double k, Rgb on, double hover, bool enabled, double a = 1.0);
+constexpr int kSwitchW = 14, kSwitchH = 8;  // cells
 
 // A pixel-language "rounded rectangle": a shape on the art grid whose corners
 // follow `profile` (inset per row from the top, mirrored at the bottom),

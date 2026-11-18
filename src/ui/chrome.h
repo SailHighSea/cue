@@ -11,6 +11,7 @@ struct WindowChrome {
   double s = 2;
   bool maximized = false;
   bool pinned = false;  // the window stays above the others
+  bool micro = false;   // music's Micro (the cover is the window): only the pin and close
   Fade vis{0, 0, 0.14, 0.30};
   std::array<double, 4> hov{0, 0, 0, 0};  // hover fade per button (Omni hover: 110 ms ease-out)
   int hot = None;
@@ -18,8 +19,10 @@ struct WindowChrome {
   static constexpr int kStep = 17, kSize = 14, kInset = 6, kPinGap = 4;  // art px
   // Rects in the coordinate space of a window `w` px wide. The pin stands a little apart from the
   // three window buttons: it changes how the window behaves, not where it is.
+  bool shown(int i) const { return !micro || i == Pin || i == Close; }
   Rect rect(int i, int w) const {
-    int slot = i == Pin ? 3 : 2 - i;
+    if (!shown(i)) return {};
+    int slot = i == Pin ? (micro ? 1 : 3) : 2 - i;
     int x = w - (kInset + kSize + slot * kStep + (i == Pin ? kPinGap : 0)) * s;
     return {x, kInset * s - 2 * s, kSize * s, kSize * s};
   }
@@ -48,6 +51,7 @@ struct WindowChrome {
     static const BitmapDef pin_on{"win-pinned", 5, 6, ".###." ".###." ".###." "#####" "..#.." "..#.."};
     const char* icons[3] = {"win-min", maximized ? "win-restore" : "win-max", "x-small"};
     for (int i = 0; i < 4; ++i) {
+      if (!shown(i)) continue;
       Rect r = rect(i, w);
       r.x -= ox; r.y -= oy;
       double h = ease_out(hov[i]);

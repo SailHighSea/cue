@@ -14,7 +14,7 @@ done
 export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=1} UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1}
 bad=0
 for t in tests/*_test.cpp; do
-  [[ $t == tests/*_engine_test.cpp || $t == tests/ui_language_win_test.cpp ]] && continue
+  [[ $t == tests/*_engine_test.cpp || $t == tests/ui_language_win_test.cpp || $t == tests/recent_thumbs_win_test.cpp ]] && continue  # (Windows only)
   n=$(basename "${t%.cpp}")
   g++ $F "$t" "${objs[@]}" -o "$out/bin/$n" || { echo "FAILED compile $n"; bad=1; continue; }
   if ! timeout 1800 "$out/bin/$n" > "$out/$n.log" 2>&1 || grep -q "Sanitizer\|runtime error" "$out/$n.log"; then

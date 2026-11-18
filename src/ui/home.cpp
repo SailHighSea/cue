@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "../core/i18n.h"
+#include "thumb_art.h"
 
 namespace {
 // art px: a title, its quiet line and a progress rule, with air between entries (the hover's
@@ -11,10 +13,14 @@ namespace {
 constexpr int kRowPitch = 38;
 constexpr int kRowH = 33;
 constexpr int kTitleGap = 24;  // "Recentes" to its first entry
+constexpr int kContGap = 14;   // the entry to continue to "recentes" under it
 // the ··· menu: the player's menus (rows of 13 px plus their breath, a hairline between groups)
-constexpr int kMenuRow = 18, kMenuRule = 9, kMenuInset = 4;
+// (16/11, as the player's menus: 10 art px of air above the first line's capitals and under the
+// last's, and as much above the hairline as under it; the rule was 9 and the foot 4)
+constexpr int kMenuRow = 18, kMenuRule = 10, kMenuInset = 4, kMenuFoot = 5;
 const std::vector<int> kMenuProfile = {2, 1};
-constexpr int kMaxRows = 6;
+constexpr int kMaxRows = 6;    // the plain list's most (with pictures: the one to continue and three)
+constexpr int kMaxRecent = 3;
 constexpr double kEggDur[5] = {0, 5.4, 4.6, 5.4, 3.6};
 // which surprises were seen: Christmas uses its own bits (5..7), so the old ones never count
 constexpr int seen_bit(int v) { return v >= 1 && v <= 3 ? 1 << (v + 4) : 1 << v; }
@@ -34,6 +40,149 @@ void HomeView::set_rows(std::vector<HomeRow> r) {
   layout();
 }
 
+namespace {
+// clearing the list: each entry leaves 35 ms after the one above it, in 0.24 s; then the title
+// takes 0.3 s to its new place, and the empty line comes in over its second half
+constexpr double kClearStagger = 0.035, kClearRow = 0.24, kClearTitle = 0.3;
+}  // namespace
+
+double HomeView::clear_end() const {
+  if (ghosts_.empty()) return clear_t0_;
+  return clear_t0_ + kClearStagger * (ghosts_.size() - 1) + kClearRow - 0.08 + kClearTitle;
+}
+
+// how far the title has glided (0 at its old place) and the empty line come in, now
+void HomeView::clear_fx(double now, double& title_k, double& empty_k) const {
+  title_k = empty_k = 1;
+  if (ghosts_.empty()) return;
+  const double start = clear_t0_ + kClearStagger * (ghosts_.size() - 1) + kClearRow - 0.08;
+  title_k = ease_in_out(std::clamp((now - start) / kClearTitle, 0.0, 1.0));
+  empty_k = ease_out(std::clamp((now - start - kClearTitle * 0.45) / (kClearTitle * 0.75), 0.0, 1.0));
+}
+
+void HomeView::clear_animated(double now, Canvas* scratch) {
+  ghosts_.clear();
+  if (rows.empty() || reduce_motion() || w <= 0 || h <= 0) return;
+  // the list as it is on screen, without the menu (it goes at the click) or a hover
+  menu_ = false;
+  menu_fade_.v = menu_fade_.target = 0;
+  const int keep_focus = focus_;
+  focus_ = -1;
+  std::vector<double> keep_hov = hov_;
+  for (size_t k = 0; k < rows.size() && k < hov_.size(); ++k) hov_[k] = 0;
+  Canvas own;
+  Canvas& snap = scratch ? *scratch : own;
+  render(snap, now);
+  hov_ = keep_hov;
+  focus_ = keep_focus == kMenuClear ? -1 : keep_focus;
+  std::vector<Rect> leaving;
+  if (cont_) leaving.push_back(r_cont_label_.grow(2 * s));  // ("continuar" leaves first, with its entry)
+  leaving.insert(leaving.end(), r_rows_.begin(), r_rows_.end());
+  for (const Rect& r : leaving) {
+    Ghost g;
+    g.r = {std::max(0, r.x), std::max(0, r.y), std::min(r.w, w - std::max(0, r.x)), std::min(r.h, h - std::max(0, r.y))};
+    if (g.r.w <= 0 || g.r.h <= 0) continue;
+    g.img.resize(g.r.w, g.r.h);
+    for (int y = 0; y < g.r.h; ++y)
+      std::copy_n(&snap.px[(size_t)(g.r.y + y) * w + g.r.x], g.r.w, &g.img.px[(size_t)y * g.r.w]);
+    ghosts_.push_back(std::move(g));
+  }
+  title_from_y_ = r_title_.y;
+  clear_t0_ = now;
+  blinked_ = false;
+  update_face_target(now);
+}
+
+// Everything of the list on screen: its titles, its entries and the light around the one to
+// continue (its reach), within the window.
+Rect HomeView::list_band() const {
+  Rect band = r_list_;
+  for (const Rect& r : {r_title_, r_dots_, r_cont_label_}) {
+    if (r.w <= 0 || r.h <= 0) continue;
+    const int x0 = std::min(band.x, r.x), y0 = std::min(band.y, r.y);
+    band = {x0, y0, std::max(band.r(), r.r()) - x0, std::max(band.b(), r.b()) - y0};
+  }
+  band = band.grow((int)std::lround(32 * s));
+  const int x0 = std::max(0, band.x), y0 = std::max(0, band.y), x1 = std::min(w, band.r()), y1 = std::min(h, band.b());
+  return x1 > x0 && y1 > y0 ? Rect{x0, y0, x1 - x0, y1 - y0} : Rect{};
+}
+
+void HomeView::swap_animated(double now, Canvas* scratch) {
+  swap_t0_ = -10;
+  swap_old_ = Canvas{};
+  if (reduce_motion() || w <= 0 || h <= 0 || leave_t0_ > 0) return;
+  // the list as it is on screen, without the menu (it goes at the click) or a hover
+  menu_ = false;
+  menu_fade_.v = menu_fade_.target = 0;
+  std::vector<double> keep_hov = hov_;
+  for (size_t k = 0; k < rows.size() && k < hov_.size(); ++k) hov_[k] = 0;
+  // only the list's band is drawn for it (a clip: the same drawing code, nothing else touched):
+  // a whole home at 4K was 33 MB drawn at the click (16/11: that is why it did not move under Settings)
+  swap_r_ = list_band();
+  if (swap_r_.w <= 0) { hov_ = keep_hov; return; }
+  Canvas own;
+  Canvas& snap = scratch ? *scratch : own;
+  if (snap.w != w || snap.h != h) snap.resize(w, h);
+  snap.set_clip(swap_r_);
+  render(snap, now);
+  snap.reset_clip();
+  hov_ = keep_hov;
+  swap_old_.resize(swap_r_.w, swap_r_.h);
+  for (int y = 0; y < swap_r_.h; ++y)
+    std::copy_n(&snap.px[(size_t)(swap_r_.y + y) * w + swap_r_.x], swap_r_.w, &swap_old_.px[(size_t)y * swap_r_.w]);
+  swap_t0_ = now;
+}
+
+// Over the new list as it was drawn: it is hidden at first and comes in rising a few pixels
+// (covered by the room's colour, lifting off), while the old one fades out on top.
+void HomeView::draw_swap(Canvas& c, double now) const {
+  if (!swapping(now) || swap_old_.w <= 0) return;
+  const Palette& p = P();
+  const double t = now - swap_t0_;
+  const double in = ease_out(std::clamp((t - kSwapDelay) / kSwapIn, 0.0, 1.0));
+  const Rect band = list_band();
+  if (band.w > 0 && in < 1) {
+    // the new list, risen from 4 px of art below: the band shifted down, then covered as it fades in
+    const int rise = (int)std::lround((1 - in) * 4) * (int)std::lround(s);
+    if (rise > 0) {
+      for (int y = band.b() - 1; y >= band.y + rise; --y)
+        std::copy_n(&c.px[(size_t)(y - rise) * c.w + band.x], band.w, &c.px[(size_t)y * c.w + band.x]);
+      c.fill(band.x, band.y, band.w, rise, p.bg, 1.0);
+    }
+    c.fill(band, p.bg, 1 - in);
+  }
+  const double out = 1 - ease_out(std::clamp(t / kSwapOut, 0.0, 1.0));
+  if (out > 0.003) c.blit(swap_old_, swap_r_.x, swap_r_.y, out);
+}
+
+void HomeView::set_thumb(int i, std::shared_ptr<const HomeThumb> t, double now) {
+  if (i < 0 || i >= (int)all_rows_.size() || all_rows_[i].thumb == t) return;
+  const bool had = all_rows_[i].thumb != nullptr;
+  all_rows_[i].thumb = std::move(t);
+  // a first picture fades in over the stand-in; a newer one (the frame moved on) simply replaces it,
+  // and one that arrives while the list still waits for it comes in with the list
+  all_rows_[i].thumb_at = had || reduce_motion() || list_held(now) ? -100 : now;
+  if (i < (int)rows.size()) rows[i] = all_rows_[i];
+}
+
+void HomeView::hold_list(double now, double secs) {
+  list_hold_until_ = reduce_motion() ? -1 : now + secs;
+  list_in_t0_ = -10;
+}
+
+void HomeView::show_list(double now) {
+  if (!list_held(now)) return;
+  list_hold_until_ = -1;
+  list_in_t0_ = now;
+}
+
+double HomeView::list_in(double now) const {
+  if (list_held(now)) return 0;
+  // (a wait that simply ran out: the list comes in from where the wait ended)
+  const double t0 = list_in_t0_ > 0 ? list_in_t0_ : list_hold_until_;
+  return t0 > 0 ? ease_out(std::clamp((now - t0) / 0.2, 0.0, 1.0)) : 1.0;
+}
+
 void HomeView::layout() {
   const int W = w / s, H = h / s;
   // the composition keeps its proportions on wide or huge windows: it never spreads past
@@ -49,7 +198,14 @@ void HomeView::layout() {
   const int iw = 11 + 6 + text_w(tr(str::home_open_file), 1);
   const double cx0 = ox + split * 0.56;
   const double half = std::max(11 * fscale, iw / 2.0);   // the eyes reach 8 + 3 cells of `scale`
-  int x0 = ox + (int)std::lround(CW * 0.49);
+  // the list's pictures: 48 x 27 (16:9) where the column has room, 32 x 18 where it is
+  // narrower, none in a narrow window (the list keeps its small icons). With pictures, the list
+  // starts a little further left: what they take from the names, the column gives back.
+  // (the thresholds keep at least 70 px of title beside the picture and "24 min left")
+  // (the column's left edge is the same with pictures or without: switching "mostrar imagens"
+  // changes only what is in it. It is the pictures' edge wherever the column has room for them;
+  // a narrow window, where the list never has pictures, keeps the list's own)
+  int x0 = ox + (int)std::lround(CW * (CW >= 400 ? 0.45 : 0.49));
   int x1 = ox + CW - (int)std::lround(CW * 0.09);
   const double left = cx0 - half, right = x1;
   const int dx = (int)std::lround(((W - right) - left) / 2.0);
@@ -65,24 +221,70 @@ void HomeView::layout() {
   int ix = (int)std::lround(cx - iw / 2.0);
   int iy = (int)std::lround(face.eye_y() / s + 9 * face.scale + 14);
   r_open_ = {(ix - 5) * s, (iy - 3) * s, (iw + 10) * s, 18 * s};
+  // "configurações" right under it, the same kind of line: its icon in the same column, its own
+  // width (the eyes and "open a file" stay where they were)
+  r_settings_ = {(ix - 5) * s, (iy - 3 + 18 + 2) * s, (11 + 6 + text_w(tr(str::settings_title), 1) + 10) * s, 18 * s};
 
-  // Recentes column
-  // as many entries as the window holds (two lines each); the rest wait for a larger window
-  const int fit = std::clamp((H - 72) / kRowPitch, 1, kMaxRows);
-  rows.assign(all_rows_.begin(), all_rows_.begin() + std::min((int)all_rows_.size(), fit));
+  // Recentes column. When the newest entry is one to go back to, it stands first, apart, under
+  // "continuar" (its picture twice the list's); the list goes on under "recentes".
+  // Planned for both forms (with pictures and the list of words): the column's top is where the
+  // taller of the two puts it, so switching "mostrar imagens" changes only what is in it.
+  struct Plan { int tw = 0, th = 0, ctw = 0, cth = 0, card_h = 0, cont_extra = 0, lead = 0, count = 0, rest = 0, seen = 0; bool cont = false; };
+  auto plan = [&](bool pics) {
+    Plan p;
+    if (!pics) p.tw = p.th = 0;  // the list of words (the ··· menu's choice)
+    else if (CW >= 456) { p.tw = 48; p.th = 27; }
+    else if (CW >= 400) { p.tw = 32; p.th = 18; }
+    p.cont = pics && !all_rows_.empty() && all_rows_[0].progress >= 0 && all_rows_[0].progress < 1 &&
+             all_rows_[0].kind != HomeKind::Music && !(all_rows_[0].audio && all_rows_[0].kind == HomeKind::Video);
+    // its picture: the list's own nearly three times over where the column has room (it is the
+    // one thing on the home meant to be opened), twice where it is narrower; 16:9 always
+    const int lw = x1 - x0;
+    if (!p.tw) p.ctw = p.cth = 0;
+    else if (lw >= 300) { p.ctw = 128; p.cth = 72; }
+    else if (lw >= 230) { p.ctw = 96; p.cth = 54; }
+    else { p.ctw = p.tw * 2; p.cth = p.th * 2; }
+    p.card_h = p.cont && p.cth ? p.cth + 6 : kRowH;
+    p.cont_extra = p.cont ? kTitleGap - 3 + p.card_h + kContGap : 0;  // its word, the card, the air before "recentes"
+    // as many entries as the window holds (two lines each); the rest wait for a larger window
+    p.lead = p.cont ? 1 : 0;
+    const int fit = std::clamp((H - 72 - p.cont_extra) / kRowPitch, p.lead ? 0 : 1, pics ? kMaxRecent : kMaxRows);
+    p.count = std::min((int)all_rows_.size(), p.lead + fit);
+    p.rest = p.count - p.lead;
+    const int n = std::max(1, p.rest);
+    // (seen: from the capitals of a title (2 px into its line) to the last entry's rule, or
+    // its second line where it has none, 2 px higher: the middle of the two)
+    // (with pictures, the last one's bottom edge: 3 px lower than the rule)
+    const int last = p.th >= 27 ? 30 : 27;
+    const int list_seen = p.count == 0 || p.rest == 0 ? 21 + 10 : kTitleGap - 3 + (n - 1) * kRowPitch + last - 2;
+    p.seen = p.cont ? (kTitleGap - 3 + p.card_h - 2) + (p.rest > 0 ? kContGap + list_seen : 0) : list_seen;
+    return p;
+  };
+  const Plan P = plan(covers), other = plan(!covers);
+  thumb_w_ = P.tw; thumb_h_ = P.th;
+  cont_ = P.cont;
+  cont_tw_ = P.ctw; cont_th_ = P.cth;
+  const int card_h = P.card_h, cont_extra = P.cont_extra, lead = P.lead;
+  rows.assign(all_rows_.begin(), all_rows_.begin() + P.count);
   if (focus_ >= (int)rows.size() && focus_ < kOpen) focus_ = -1;
-  int n = std::max(1, (int)rows.size());
-  int block = kTitleGap + n * kRowPitch;
-  // (seen: from the capitals of "Recentes" (2 px into its line) to the last entry's rule, or
-  // its second line where it has none, 2 px higher: the middle of the two)
-  const int seen = rows.empty() ? 21 + 10 : kTitleGap - 3 + (n - 1) * kRowPitch + 27 - 2;
-  int y0 = (int)std::lround(H / 2.0 - seen / 2.0 - 1);
-  r_title_ = {x0 * s, y0 * s, (x1 - x0) * s, 12 * s};
-  // (its dots end where the entries end, level with the middle of "Recentes")
-  r_dots_ = {(x1 - 8) * s, y0 * s, 11 * s, 10 * s};
+  const int rest = P.rest;
+  recent_title_ = !cont_ || rest > 0;
+  int n = std::max(1, rest);
+  int y0 = (int)std::lround(H / 2.0 - std::max(P.seen, other.seen) / 2.0 - 1);
   r_rows_.clear();
-  for (int i = 0; i < (int)rows.size(); ++i)
-    r_rows_.push_back({(x0 - 6) * s, (y0 + kTitleGap - 3 + i * kRowPitch) * s, (x1 - x0 + 12) * s, kRowH * s});
+  r_cont_label_ = {};
+  int yr = y0;  // "recentes"
+  if (cont_) {
+    r_cont_label_ = {x0 * s, y0 * s, (x1 - x0) * s, 12 * s};
+    r_rows_.push_back({(x0 - 6) * s, (y0 + kTitleGap - 3) * s, (x1 - x0 + 12) * s, card_h * s});
+    yr = y0 + kTitleGap - 3 + card_h + kContGap;
+  }
+  r_title_ = recent_title_ ? Rect{x0 * s, yr * s, (x1 - x0) * s, 12 * s} : r_cont_label_;
+  // (its dots end where the entries end, level with the middle of its title)
+  r_dots_ = {(x1 - 8) * s, r_title_.y, 11 * s, 10 * s};
+  for (int i = lead; i < (int)rows.size(); ++i)
+    r_rows_.push_back({(x0 - 6) * s, (yr + kTitleGap - 3 + (i - lead) * kRowPitch) * s, (x1 - x0 + 12) * s, kRowH * s});
+  const int block = (cont_ ? cont_extra : 0) + kTitleGap + n * kRowPitch;
   r_list_ = {(x0 - 8) * s, y0 * s - 6 * s, (x1 - x0 + 16) * s, (block + 12) * s};
   layout_menu();
   layout_update();
@@ -94,6 +296,7 @@ std::string HomeView::menu_label(int id) const {
   if (id == kMenuLang) return tr(str::more_language);
   if (id == kMenuClear) return tr(str::home_clear_recents);
   if (id == kMenuRemote) return tr(str::remote_title);
+  if (id == kMenuCovers) return tr(str::home_show_pictures);
   if (id == kLangOpt) return tr(str::language_auto);
   if (id > kLangOpt && id <= kLangOpt + i18n::kLangCount) return i18n::native_name((i18n::Lang)(id - kLangOpt - 1));
   return "";
@@ -108,6 +311,7 @@ void HomeView::layout_menu() {
   } else {
     menu_ids_.push_back(kMenuFolder);
     menu_ids_.push_back(kMenuLang);
+    // ("show pictures" moved to Settings on 15/11: the home's own choice, beside its interface)
     if (remote_available) menu_ids_.push_back(kMenuRemote);
     if (!rows.empty()) menu_ids_.push_back(kMenuClear);
   }
@@ -120,8 +324,8 @@ void HomeView::layout_menu() {
   const int x1 = r_title_.r() / s, y0 = r_title_.y / s;
   // a short window: the rows close up (to 14 px), then the menu rises until it fits
   const int n = std::max(1, (int)menu_ids_.size()), room = (int)(h / s) - 6 - (y0 + 15);
-  const int row = std::clamp((room - 2 * kMenuInset - rule) / n, 14, kMenuRow);
-  const int W = std::max(150, 2 + lead + words + trail + 2), H = 2 * kMenuInset + row * n + rule;
+  const int row = std::clamp((room - kMenuInset - kMenuFoot - rule) / n, 14, kMenuRow);
+  const int W = std::max(150, 2 + lead + words + trail + 2), H = kMenuInset + kMenuFoot + row * n + rule;
   const int top = std::max(4, std::min(y0 + 15, (int)(h / s) - 6 - H));
   r_menu_ = {(x1 + 3 - W) * s, top * s, W * s, H * s};  // (its right edge under the ···'s)
   for (size_t i = 0; i < menu_ids_.size(); ++i) {
@@ -169,7 +373,7 @@ void HomeView::layout_survey() {
     // never over anything of the home's own (a short or narrow window simply goes without it)
     const Rect room = c.grow((int)(6 * s));
     bool clear = true;
-    for (const Rect& o : {r_list_, r_open_, face.bounds(), r_title_, r_update_, r_update_skip_, r_news_, r_news_close_})
+    for (const Rect& o : {r_list_, r_open_, r_settings_, face.bounds(), r_title_, r_update_, r_update_skip_, r_news_, r_news_close_})
       if (overlaps(room, o)) { clear = false; break; }
     if (clear) { r = c; break; }
   }
@@ -281,6 +485,7 @@ int HomeView::hit(int x, int y) const {
   for (int i = 0; i < (int)r_rows_.size(); ++i)
     if (r_rows_[i].contains(x, y)) return i;
   if (r_open_.contains(x, y) && engine_problem.empty()) return kOpen;
+  if (r_settings_.contains(x, y) && engine_problem.empty() && !drag_) return kSettings;
   return -1;
 }
 
@@ -292,6 +497,14 @@ void HomeView::set_hover_row(int i, double now) {
 void HomeView::update_face_target(double now) {
   if (egg_ != 0) return;
   if (leave_t0_ > 0) return;
+  if (!ghosts_.empty() && !drag_) {
+    // the eyes follow the entries out, one after another
+    const int j = std::clamp((int)((now - clear_t0_) / kClearStagger), 0, (int)ghosts_.size() - 1);
+    const Rect& r = ghosts_[j].r;
+    face.set_mode(Face::Mode::Recent, now);
+    face.look_at(r.x + r.w * 0.2, r.cy(), 0.9);
+    return;
+  }
   if (drag_) {
     face.set_mode(Face::Mode::Drag, now);
     face.look_at(mx_, my_);
@@ -322,6 +535,66 @@ bool HomeView::is_background(int x, int y) const {
   if (hit(x, y) != -1 || chrome.area(w).contains(x, y)) return false;
   if (face.bounds().contains(x, y)) return false;  // the eyes take clicks (and keep a secret)
   return true;
+}
+
+Rect HomeView::face_reach() const {
+  // in cells of the face's scale (physical px = cells * scale * s), from the eyes' line: the eyes
+  // sit 8 cells either side of the centre and look up to max_look (spring overshoot included),
+  // each at most 1.5 blocks of 3 cells wide; a thought rises up to 16.5 cells right and 12 up; the
+  // mouth opens below, under 16 cells; the hop lifts all of it a little. A generous margin
+  // around that, so a rounding or an overshoot never draws past it.
+  const double k = face.scale * s;
+  const double look = (face.max_look * 1.5 + 2) * s;
+  const int left = (int)std::floor(face.cx - 18 * k - look - 4 * s);
+  const int right = (int)std::ceil(face.cx + 24 * k + look + 4 * s);
+  const int top = (int)std::floor(face.eye_y() - 18 * k - look - 4 * s);
+  const int bottom = (int)std::ceil(face.eye_y() + 24 * k + look + 4 * s);
+  const int x0 = std::max(0, left), y0 = std::max(0, top), x1 = std::min(w, right), y1 = std::min(h, bottom);
+  return x1 > x0 && y1 > y0 ? Rect{x0, y0, x1 - x0, y1 - y0} : Rect{};
+}
+
+uint64_t HomeView::eyes_only_key(double now) const {
+  // anything else moving, or drawn from the clock rather than from state: a whole frame
+  if (egg_ || !ghosts_.empty() || leave_t0_ > 0 || now - enter_t0_ < 0.45 || thumbs_fading(now) || clear_t0_ > now - 5 ||
+      list_moving(now) || list_in(now) < 1 || iris_opening(now))
+    return 0;
+  if (survey || survey_vis_.v > 0 || survey_vis_.target > 0) return 0;  // (its scene keeps its own time)
+  if (menu_fade_.v != menu_fade_.target || chrome.vis.v != chrome.vis.target) return 0;
+  uint64_t d = 1469598103934665603ull;
+  auto mixin = [&](uint64_t v) { d ^= v; d *= 1099511628211ull; };
+  auto num = [&](double v) { uint64_t b = 0; std::memcpy(&b, &v, sizeof b); mixin(b); };
+  auto str = [&](const std::string& t) { mixin(t.size()); for (unsigned char ch : t) mixin(ch); };
+  auto rect = [&](const Rect& r) { mixin((uint64_t)(uint32_t)r.x << 32 | (uint32_t)r.y); mixin((uint64_t)(uint32_t)r.w << 32 | (uint32_t)r.h); };
+  mixin((uint64_t)w); mixin((uint64_t)h); num(s);
+  num(face.cx); num(face.cy); num(face.scale);  // (the eyes' place: their corner of the window)
+  mixin(rows.size()); mixin(all_rows_.size());
+  for (const HomeRow& r : rows) {
+    str(r.name); str(r.right); num(r.progress); str(r.sub); mixin(r.audio); mixin((uint64_t)r.kind); str(r.seed);
+    mixin((uint64_t)(uintptr_t)r.thumb.get()); num(r.thumb_at);
+  }
+  str(engine_problem); str(notice); mixin(!notice.empty() && now < notice_until);
+  mixin((uint64_t)(int64_t)language); mixin((uint64_t)eggs_seen);
+  str(update_version); num(update_progress); mixin(update_busy); mixin(news); mixin(remote_available);
+  mixin(news && !reduce_motion() && std::fmod(now, 3.2) < 0.18);  // the spark's twinkle
+  mixin(chrome.maximized); mixin(chrome.pinned); num(chrome.vis.v); num(chrome.s); mixin((uint64_t)(int64_t)chrome.hot);
+  for (double v : chrome.hov) num(v);
+  mixin((uint64_t)(int64_t)hover_); mixin((uint64_t)(int64_t)focus_); mixin(kb_); mixin(menu_); mixin(menu_lang_); mixin(drag_);
+  mixin((uint64_t)(int64_t)mx_); mixin((uint64_t)(int64_t)my_);
+  for (int id : menu_ids_) mixin((uint64_t)(int64_t)id);
+  for (double v : hov_) num(v);
+  num(menu_fade_.v); num(menu_fade_.target);
+  mixin((uint64_t)(int64_t)title_from_y_);
+  mixin(settings_lit);
+  for (const Rect& r : {r_open_, r_settings_, r_title_, r_dots_, r_menu_, r_list_, r_update_, r_update_skip_, r_news_, r_news_close_, r_cont_label_}) rect(r);
+  mixin(cont_); mixin(recent_title_); mixin(covers);
+  for (const Rect& r : r_rows_) rect(r);
+  mixin((uint64_t)(int64_t)thumb_w_); mixin((uint64_t)(int64_t)thumb_h_);
+  // what the drawing reads from outside the home: the words' language, the palette, reduced motion
+  str(i18n::tag(i18n::language()));
+  const Palette& p = P();
+  for (Rgb c : {p.bg, p.fg, p.dim, p.faint, p.hover, p.pixel, p.edge}) mixin((uint64_t)c.r << 16 | (uint64_t)c.g << 8 | c.b);
+  mixin(reduce_motion());
+  return d ? d : 1;
 }
 
 double HomeView::hov(int id) const {
@@ -358,16 +631,18 @@ HomeAction HomeView::mouse_down(int x, int y, double now) {
     default: break;
   }
   int hh = hit(x, y);
-  bool in_menu = hh == kMenuFolder || hh == kMenuPad || hh == kMenuClear || hh == kMenuLang || hh == kMenuRemote || (hh >= kLangOpt && hh <= kLangOpt + i18n::kLangCount);
+  bool in_menu = hh == kMenuFolder || hh == kMenuCovers || hh == kMenuPad || hh == kMenuClear || hh == kMenuLang || hh == kMenuRemote || (hh >= kLangOpt && hh <= kLangOpt + i18n::kLangCount);
   if (menu_ && !in_menu && hh != kDots) { menu_ = false; return {}; }
   if (hh == kMenuPad) return {};
   if(hh==kMenuFolder) {menu_=false;return {HomeAct::OpenFolder,-1};}
   if (hh == kMenuClear) { menu_ = false; return {HomeAct::ClearRecents, -1}; }
+  if (hh == kMenuCovers) { menu_ = false; return {HomeAct::Covers, covers ? 0 : 1}; }
   if (hh == kMenuRemote) { menu_ = false; return {HomeAct::Remote, -1}; }
   if (hh == kMenuLang) { open_menu(true); return {}; }
   if (hh >= kLangOpt && hh <= kLangOpt + i18n::kLangCount) return {HomeAct::Language, hh - kLangOpt - 1};
   if (hh == kDots) { if (menu_) menu_ = false; else open_menu(false); return {}; }
   if (hh == kOpen) return {HomeAct::OpenDialog, -1};
+  if (hh == kSettings) return {HomeAct::Settings, -1};
   if (hh == kUpdate) return {HomeAct::Update, -1};
   if (hh == kUpdateSkip) return {HomeAct::SkipUpdate, -1};
   if (hh == kSurveyGo) return {HomeAct::Survey, -1};
@@ -390,7 +665,7 @@ HomeAction HomeView::mouse_down(int x, int y, double now) {
 
 HomeAction HomeView::key(const std::string& k, bool shift, double now) {
   std::vector<int> order;
-  if (engine_problem.empty()) order.push_back(kOpen);
+  if (engine_problem.empty()) { order.push_back(kOpen); order.push_back(kSettings); }
   for (int i = 0; i < (int)rows.size(); ++i) order.push_back(i);
   order.push_back(kDots);
   if (menu_) for (int id : menu_ids_) order.push_back(id);
@@ -412,6 +687,7 @@ HomeAction HomeView::key(const std::string& k, bool shift, double now) {
     else focus_ = std::clamp(focus_ + (k == "down" ? 1 : -1), 0, (int)rows.size() - 1);
   } else if (k == "enter" || (k == "space" && kb_)) {
     if (focus_ == kOpen) return {HomeAct::OpenDialog, -1};
+    if (focus_ == kSettings) return {HomeAct::Settings, -1};
     if (focus_ == kUpdate) return {HomeAct::Update, -1};
     if (focus_ == kNews) return {HomeAct::News, -1};
     if (focus_ == kNewsClose) { focus_ = -1; return {HomeAct::NewsClose, -1}; }
@@ -420,6 +696,7 @@ HomeAction HomeView::key(const std::string& k, bool shift, double now) {
     if (focus_ == kDots) { if (menu_) menu_ = false; else open_menu(false); }
     else if(focus_==kMenuFolder) {menu_=false;focus_=-1;return {HomeAct::OpenFolder,-1};}
     else if (focus_ == kMenuClear) { menu_ = false; focus_ = -1; return {HomeAct::ClearRecents, -1}; }
+    else if (focus_ == kMenuCovers) { menu_ = false; focus_ = -1; return {HomeAct::Covers, covers ? 0 : 1}; }
     else if (focus_ == kMenuRemote) { menu_ = false; focus_ = -1; return {HomeAct::Remote, -1}; }
     else if (focus_ == kMenuLang) open_menu(true);
     else if (focus_ >= kLangOpt && focus_ <= kLangOpt + i18n::kLangCount) return {HomeAct::Language, focus_ - kLangOpt - 1};
@@ -468,11 +745,13 @@ void HomeView::leave(double now, bool swallow) {
 void HomeView::cancel_leave(double now) {
   if (leave_t0_ < 0) return;
   leave_t0_ = -1;
+  gone_ = false;
   enter(now);
 }
 
 void HomeView::enter(double now, bool keep_face) {
   leave_t0_ = -1;
+  gone_ = false;
   enter_t0_ = now;
   keep_face_ = keep_face;
   face.closed = false;
@@ -482,8 +761,15 @@ void HomeView::enter(double now, bool keep_face) {
   update_face_target(now);
 }
 
+void HomeView::enter_iris(double now) {
+  enter(now, false);
+  enter_t0_ = now - 1;  // no fade of its own: the iris is the entrance
+  iris_t0_ = now;
+}
+
 void HomeView::fades(double now, double& content, double& fa) const {
   content = fa = 1;
+  if (gone_) { content = fa = 0; return; }
   if (leave_t0_ > 0) {
     double t = now - leave_t0_;
     if (swallow_) {
@@ -550,7 +836,7 @@ void HomeView::start_egg(double now, int forced) {
 }
 
 bool HomeView::tick(double now, double dt) {
-  bool moving = false;
+  bool moving = iris_opening(now) || (iris_t0_ > 0 && now - iris_t0_ < kIrisOpen + 0.05);
   if (egg_) {
     double t = now - egg_t0_;
     moving = true;
@@ -626,6 +912,14 @@ bool HomeView::tick(double now, double dt) {
   moving |= chrome.tick(dt);
   if (leave_t0_ > 0 && now - leave_t0_ < leave_dur() + 0.05) moving = true;
   if (now - enter_t0_ < 0.45) moving = true;
+  if (thumbs_fading(now) || list_moving(now) || list_in(now) < 1) moving = true;
+  if (!ghosts_.empty()) {
+    moving = true;
+    const double last_out = clear_t0_ + kClearStagger * (ghosts_.size() - 1) + kClearRow;
+    if (!blinked_ && now >= last_out) { blinked_ = true; face.next_blink = now; }  // all gone: a blink
+    if (now >= clear_end()) { ghosts_.clear(); update_face_target(now); }
+    else update_face_target(now);
+  }
   size_t n = rows.size() + kHitIds;
   if (hov_.size() != n) hov_.assign(n, 0.0);
   for (size_t k = 0; k < n; ++k) {
@@ -637,7 +931,8 @@ bool HomeView::tick(double now, double dt) {
 }
 
 double HomeView::next_event(double now) const {
-  if (egg_ || chrome.vis.v != chrome.vis.target || leave_t0_ > 0 || now - enter_t0_ < 0.45 || menu_fade_.v != menu_fade_.target || menu_fade_.v != (menu_ ? 1.0 : 0.0)) return 0;
+  if (egg_ || iris_opening(now) || chrome.vis.v != chrome.vis.target || leave_t0_ > 0 || now - enter_t0_ < 0.45 || menu_fade_.v != menu_fade_.target || menu_fade_.v != (menu_ ? 1.0 : 0.0) || thumbs_fading(now) || !ghosts_.empty() ||
+      list_moving(now) || list_in(now) < 1) return 0;
   double t = face.next_event(now);
   if (!notice.empty()) t = std::min(t, notice_until - now);
   if (survey_shown()) {
@@ -785,6 +1080,170 @@ void HomeView::draw_lights(Canvas& c, double t) const {
   }
 }
 
+// ── the list's pictures ─────────────────────────────────────────────
+namespace {
+constexpr double kThumbFade = 0.24;  // a picture arriving over its stand-in
+constexpr double kThumbRest = 0.26;  // how much darker a picture rests (full light under the pointer)
+}  // namespace
+
+Rect HomeView::thumb_rect(int i) const {
+  if (!thumb_w_ || i < 0 || i >= (int)r_rows_.size()) return {};
+  const Rect& r = r_rows_[i];
+  if (cont_ && i == 0) return {r.x + 3 * s, r.y + 3 * s, cont_tw_ * s, cont_th_ * s};  // the one to continue: twice the size
+  // 3 px inside the entry's rounded box; the small one level with the two lines of words
+  return {r.x + 3 * s, r.y + (thumb_h_ >= 27 ? 3.0 : 5.5) * s, thumb_w_ * s, thumb_h_ * s};
+}
+
+const Canvas& HomeView::stand_in_for(int i) const {
+  if ((int)stand_ins_.size() < (int)rows.size()) stand_ins_.resize(rows.size());
+  Tile& t = stand_ins_[i];
+  const HomeRow& row = rows[i];
+  const Rect tr = thumb_rect(i);
+  const std::string& seed = row.seed.empty() ? row.name : row.seed;
+  const HomeKind kind = row.audio && row.kind == HomeKind::Video ? HomeKind::Music : row.kind;
+  if (t.w != tr.w || t.h != tr.h || t.seed != seed || t.kind != kind) {
+    thumb_art::make_stand_in(kind, row.audio, seed, tr.w, tr.h, s, std::max(1, (int)s), t.img);
+    t.w = tr.w; t.h = tr.h; t.seed = seed; t.kind = kind; t.src = nullptr;
+  }
+  return t.img;
+}
+
+const Canvas& HomeView::tile_for(int i) const {
+  const HomeRow& row = rows[i];
+  if (!row.thumb) return stand_in_for(i);
+  if ((int)tiles_.size() < (int)rows.size()) tiles_.resize(rows.size());
+  Tile& t = tiles_[i];
+  const Rect tr = thumb_rect(i);
+  if (t.src != row.thumb.get() || t.w != tr.w || t.h != tr.h) {
+    thumb_art::make_tile(*row.thumb, tr.w, tr.h, std::max(1, (int)s), t.img);
+    t.src = row.thumb.get(); t.w = tr.w; t.h = tr.h;
+  }
+  return t.img;
+}
+
+// A song's record: made for its size, its turn and its light, again only when one changes
+// (the turn in 1/64ths, the light in 1/32nds: a hover redraws it a few times, then never).
+const Canvas& HomeView::disc_for(int i, double turn, double light) const {
+  if ((int)discs_.size() < (int)rows.size()) discs_.resize(rows.size());
+  Disc& d = discs_[i];
+  const HomeRow& row = rows[i];
+  const int side = (int)std::lround(thumb_rect(i).h * 0.92);
+  const uint32_t label = row.thumb ? thumb_art::accent(*row.thumb) : thumb_art::stand_in_accent(row.seed.empty() ? row.name : row.seed);
+  const int tq = (int)std::lround(turn / 6.283185307 * 64), lq = (int)std::lround(light * 32);
+  if (d.side != side || d.label != label || d.turn != tq || d.light != lq || d.src != row.thumb.get()) {
+    thumb_art::make_disc(label, side, s, tq / 64.0 * 6.283185307, lq / 32.0, d.img);
+    d.side = side; d.label = label; d.turn = tq; d.light = lq; d.src = row.thumb.get();
+  }
+  return d.img;
+}
+
+bool HomeView::thumbs_fading(double now) const {
+  for (const HomeRow& r : rows)
+    if (r.thumb && now - r.thumb_at < kThumbFade + 0.05) return true;
+  return false;
+}
+
+void HomeView::draw_thumb(Canvas& c, int i, double ha, double now) const {
+  const Palette& p = P();
+  const HomeRow& row = rows[i];
+  const Rect tr = thumb_rect(i);
+  if (tr.w <= 0) return;
+  const int cut = std::max(1, (int)s), A = std::max(1, (int)std::lround(s));
+  const double fade = row.thumb ? std::clamp((now - row.thumb_at) / kThumbFade, 0.0, 1.0) : 0.0;
+  const double rest = kThumbRest * (1 - ha);  // at rest a touch darker, so the words lead
+  // audio is square, on the left; a song's record peeks out from behind it, and under the
+  // pointer slides out a few pixels more, turning as it goes (its reflections and its label's mark)
+  const bool sq = thumb_art::square(row.kind, row.audio);
+  const Rect pic = sq ? Rect{tr.x, tr.y, tr.h, tr.h} : tr;
+  if (sq && (row.kind == HomeKind::Music || (row.audio && row.kind == HomeKind::Video))) {
+    const Canvas& disc = disc_for(i, ha * 2.4, 1 - rest);
+    const int slide = (int)std::lround(ha * 4) * A;
+    const int dx = tr.x + (int)std::lround(tr.h * 1.14 / A) * A - disc.w / 2 + slide;
+    const int dy = tr.y + (tr.h - disc.h) / 2;
+    c.blit(disc, dx, dy);
+    // the cover's shadow on it: one pixel of art along the cover's edge, as tall as the record there
+    const double R = disc.w / 2.0, off = pic.r() - (dx + R);
+    if (std::fabs(off) < R) {
+      const int half = (int)std::sqrt(R * R - off * off);
+      c.fill_pixels(pic.r(), dy + (int)R - half, A, 2 * half, {0, 0, 0}, 0.55);
+    }
+  }
+  if (!row.thumb || fade < 1) c.blit(stand_in_for(i), tr.x, tr.y);
+  if (row.thumb) c.blit(tile_for(i), tr.x, tr.y, ease_out(fade));
+  if (rest > 0) c.cornered(pic, cut, p.bg, rest);
+  // how far: a bar along the picture's foot, inside its cut corners
+  const bool big = tr.h >= 27 * s;
+  if (row.progress >= 0) {
+    const int bh = std::max(1, (int)std::lround((big ? 2 : 1) * s));
+    const int bx = pic.x + cut, bw = pic.w - 2 * cut, by = pic.b() - bh;
+    const int pw = std::max(cut, (int)std::lround(bw * std::clamp(row.progress, 0.0, 1.0)));
+    c.fill_pixels(bx, by, bw, bh, {0, 0, 0}, 0.62);
+    c.fill_pixels(bx, by, pw, bh, mix(p.fg, p.pixel, ha), 0.8 + 0.2 * ha);
+  }
+  // under the pointer, a small play sign rises into the middle of the picture
+  if (big && ha > 0.01) {
+    const int rise = (int)std::lround((1 - ha) * 2) * A;
+    const int bw = 13 * A, bh2 = 11 * A;
+    const Rect b{pic.cx() - bw / 2, pic.cy() - bh2 / 2 + rise, bw, bh2};
+    c.cornered(b, A, p.bg, 0.72 * ha);
+    static const char* kPlay = "#..." "##.." "###." "####" "###." "##.." "#...";
+    c.cells(kPlay, 4, 7, b.x + 5 * A, b.y + 2 * A, A, p.pixel, ha);
+  }
+}
+
+// The entry to continue: its light (the picture's own colours, a soft glow around it), its
+// picture twice the list's with the bar of how far, and beside it the title and its line.
+const Canvas* HomeView::cont_light(Rect& at) const {
+  if (!cont_ || rows.empty() || !rows[0].thumb) return nullptr;
+  const HomeRow& row = rows[0];
+  const Rect tr = thumb_rect(0);
+  const Rect pic = thumb_art::square(row.kind, row.audio) ? Rect{tr.x, tr.y, tr.h, tr.h} : tr;
+  const int reach = std::max(6, (int)std::lround(30 * s));
+  if (cont_light_src_ != row.thumb.get() || cont_light_w_ != pic.w || cont_light_h_ != pic.h || cont_reach_ != reach) {
+    Rgb corner[4];
+    edge_colours(row.thumb->px.data(), row.thumb->w, row.thumb->h, corner);
+    glow_light(cont_light_, pic.w + 2 * reach, pic.h + 2 * reach, {reach, reach, pic.w, pic.h}, reach, corner, 0.48);
+    cont_light_src_ = row.thumb.get();
+    cont_light_w_ = pic.w;
+    cont_light_h_ = pic.h;
+    cont_reach_ = reach;
+  }
+  at = {pic.x - reach, pic.y - reach, pic.w + 2 * reach, pic.h + 2 * reach};
+  return &cont_light_;
+}
+
+// Under everything else of the list: the hover box and the light (the words of "continuar" and
+// "recentes" are drawn over the light, never tinted by it).
+void HomeView::draw_cont_back(Canvas& c, double now) const {
+  if (!cont_ || rows.empty() || !thumb_w_) return;
+  const Palette& p = P();
+  const double ha = hov(0);
+  if (ha > 0) c.cornered(r_rows_[0], s, p.hover, ha);
+  Rect at;
+  if (const Canvas* L = cont_light(at)) {
+    // it comes in with its picture, and lights a little more under the pointer
+    const double fade = std::clamp((now - rows[0].thumb_at) / kThumbFade, 0.0, 1.0);
+    const double k = ease_out(fade) * (0.75 + 0.25 * ha);
+    if (k > 0.003) c.blit(*L, at.x, at.y, k);
+  }
+}
+
+void HomeView::draw_cont(Canvas& c, double ha, double now) const {
+  const Palette& p = P();
+  const Rect& r = r_rows_[0];
+  const HomeRow& row = rows[0];
+  (void)r;
+  draw_thumb(c, 0, ha, now);  // (its box and its light are drawn first, under the titles: draw_cont_back)
+  const Rect tr = thumb_rect(0);
+  const Rect pic = thumb_art::square(row.kind, row.audio) ? Rect{tr.x, tr.y, tr.h, tr.h} : tr;
+  const int nx = pic.r() + 10 * s, x1 = r.r() - 6 * s;
+  // the title and its line, together in the middle of the picture's height
+  const int mid = pic.y + pic.h / 2;
+  const int ty = row.sub.empty() ? mid - 6 * s : mid - 13 * s, sy = mid + 1 * s;
+  text(c, fit_end(row.name, x1 - nx, s), nx, ty, s, mix(mix(p.dim, p.fg, 0.6), p.fg, ha));
+  if (!row.sub.empty()) text(c, fit_end(row.sub, x1 - nx, s), nx, sy, s, mix(p.dim, p.fg, ha * 0.5));
+}
+
 // ── render ──────────────────────────────────────────────────────────
 void HomeView::render(Canvas& c, double now) {
   const Palette& p = P();
@@ -806,39 +1265,82 @@ void HomeView::render(Canvas& c, double now) {
     int tw = text_w(label, s) + (show_icon ? 17 * s : 0);
     int x = (int)face.cx - tw / 2;
     int y = r_open_.y + 3 * s;
-    if (ha > 0) c.cornered({x - 5 * s, r_open_.y, tw + 10 * s, r_open_.h}, s, p.hover, ha);
+    // (the box: 5 px of art each side of the ink; the words end with a pixel of advance, not ink: 16/11)
+    if (ha > 0) c.cornered({x - 5 * s, r_open_.y, tw + 9 * s, r_open_.h}, s, p.hover, ha);
     if (show_icon) {
       action_icon(c, "cue:open-file", {x, y, 11 * s, 12 * s}, s, mix(p.dim, p.pixel, ha));
       x += 17 * s;
     }
     text(c, label, x, y, s, mix(col, p.fg, ha));
+    // "configurações": the same line, under it (not while a file is dragged in or the engine failed)
+    if (show_icon) {
+      const double hs = settings_lit ? 1.0 : hov(kSettings);
+      const std::string sl = tr(str::settings_title);
+      const int sx = (int)face.cx - tw / 2, sy = r_settings_.y + 3 * s;
+      // (its left edge with the line above; the gear sits 2 px into the icons' column, so 7 px of art
+      // each side of the ink: 16/11)
+      if (hs > 0) c.cornered({(int)(sx - 5 * s), r_settings_.y, (int)(text_w(sl, s) + 28 * s), r_settings_.h}, s, p.hover, hs);
+      // (the gear, 7 px, in the middle of the folder's 11 px column)
+      c.bitmap(bmp("gear"), (int)(sx + 2 * s), (int)(sy + 2 * s), s, mix(p.dim, p.pixel, hs));
+      text(c, sl, (int)(sx + 17 * s), sy, s, mix(p.dim, p.fg, hs));
+    }
   }
 
-  // Recentes
-  text(c, tr(str::home_recents), r_title_.x, r_title_.y, s, p.fg);
+  // Recentes (clearing: it waits for the entries to leave, then glides to its new place)
+  double title_k = 1, empty_k = 1;
+  clear_fx(now, title_k, empty_k);
+  const int tdy = ghosts_.empty() ? 0 : (int)std::lround((title_from_y_ - r_title_.y) * (1 - title_k) / s) * (int)s;
+  draw_cont_back(c, now);
+  if (cont_) text(c, tr(str::home_continue), r_cont_label_.x, r_cont_label_.y, s, p.fg);
+  if (recent_title_) text(c, tr(str::home_recents), r_title_.x, r_title_.y + tdy, s, p.fg);
   bool show_dots = menu_ || r_list_.contains(mx_, my_) || r_dots_.contains(mx_, my_) || (kb_ && focus_ == kDots);
   if (show_dots) {
     double on = menu_ ? 1.0 : hov(kDots);
-    if (on > 0) c.cornered(r_dots_, s, p.hover, on);
-    c.bitmap(bmp("dots"), r_dots_.x + 3 * s, r_dots_.y + 5 * s, s, mix(p.dim, p.fg, on));
+    if (on > 0) c.cornered({r_dots_.x, r_dots_.y + tdy, r_dots_.w, r_dots_.h}, s, p.hover, on);
+    c.bitmap(bmp("dots"), r_dots_.x + 3 * s, r_dots_.y + tdy + 5 * s, s, mix(p.dim, p.fg, on));
   }
-  if (rows.empty()) {
-    text(c, tr(str::home_recents_empty), r_title_.x, r_title_.y + 21 * s, s, p.faint);
+  if (rows.empty() && empty_k > 0) {
+    const int rise = (int)std::lround((1 - empty_k) * 3) * (int)s;
+    text(c, tr(str::home_recents_empty), r_title_.x, r_title_.y + tdy + 21 * s + rise, s, p.faint, empty_k);
+  }
+  for (size_t i = 0; i < ghosts_.size(); ++i) {
+    const double k = std::clamp((now - clear_t0_ - kClearStagger * i) / kClearRow, 0.0, 1.0);
+    if (k >= 1) continue;
+    const int drift = (int)std::lround(k * k * 8) * (int)s;  // it eases away, a few pixels right
+    c.blit(ghosts_[i].img, ghosts_[i].r.x + drift, ghosts_[i].r.y, 1 - ease_out(k));
   }
   for (int i = 0; i < (int)rows.size(); ++i) {
     const Rect& r = r_rows_[i];
     double ha = hov(i);
     bool on = ha > 0.5;
+    if (cont_ && i == 0 && thumb_w_) { draw_cont(c, ha, now); continue; }  // (its box: draw_cont_back)
     if (ha > 0) c.cornered(r, s, p.hover, ha);
-    // a living entry: the title and what is left on one line, a quiet line under it (the
-    // episode, or the kind of file), and the progress as a rule across the whole entry
-    int x0 = r.x + 6 * s, x1 = r.r() - 6 * s;
     const HomeRow& row = rows[i];
-    // (the two lines and the rule sit in the middle of the entry: 5 px above the capitals, 5 below the rule)
-    int ty = r.y + 3 * s, sy = r.y + 15 * s;
-    c.bitmap(bmp(row.audio ? "k-audio" : "k-video"), x0, ty + 2 * s, s, mix(p.dim, p.fg, ha));
+    const bool resumable = row.progress >= 0;
+    int x0 = r.x + 6 * s, x1 = r.r() - 6 * s;
     int rw = text_w(row.right, s);
-    bool resumable = row.progress >= 0;
+    if (thumb_w_) {
+      // the picture on the left, the title and what is left on its first line, the quiet line
+      // under them; the progress lies along the picture's foot
+      draw_thumb(c, i, ha, now);
+      const Rect tr = thumb_rect(i);
+      const bool big = thumb_h_ >= 27;
+      const int nx = tr.r() + (big ? 8 : 7) * s;
+      const int sy = big ? r.y + 17 * s : r.y + 15 * s;
+      // (no quiet line: the title in the middle of the entry, with what is left beside it)
+      const int ty = row.sub.empty() ? (big ? r.y + 11 * s : r.y + 9 * s) : big ? r.y + 5 * s : r.y + 3 * s;
+      text(c, row.right, x1 - rw + s, ty, s, resumable ? mix(p.dim, p.fg, ha) : p.faint);
+      std::string nm = fit_end(row.name, x1 - rw - 10 * s - nx, s);
+      text(c, nm, nx, ty, s, mix(mix(p.dim, p.fg, 0.35), p.fg, ha));
+      if (!row.sub.empty()) text(c, fit_end(row.sub, x1 - nx, s), nx, sy, s, mix(p.faint, p.dim, ha));
+      continue;
+    }
+    // a narrow window: a living entry without its picture: the title and what is left on one
+    // line, a quiet line under it (the episode, or the kind of file), and the progress as a rule
+    // across the whole entry
+    // (the two lines and the rule sit in the middle of the entry: 5 px above the capitals, 5 below the rule)
+    int ty = row.sub.empty() ? r.y + 9 * s : r.y + 3 * s, sy = r.y + 15 * s;  // (no quiet line: lower, beside the rule's gap)
+    c.bitmap(bmp(row.audio ? "k-audio" : "k-video"), x0, ty + 2 * s, s, mix(p.dim, p.fg, ha));
     // (a line's width counts the space after its last letter: the time ends where the rule ends)
     text(c, row.right, x1 - rw + s, ty, s, resumable ? mix(p.dim, p.fg, ha) : p.faint);
     int nx = x0 + 13 * s;
@@ -852,6 +1354,17 @@ void HomeView::render(Canvas& c, double now) {
       c.fill(nx, ly, pw, s, on ? p.fg : p.dim);
     }
   }
+  // at the start, the list (its title and entries) waits for its pictures, then fades in with them
+  if (const double li = list_in(now); li < 1) {
+    Rect band = r_title_;
+    for (const Rect& r : {r_list_, r_dots_, r_cont_label_}) {
+      if (r.w <= 0 || r.h <= 0) continue;
+      const int x0 = std::min(band.x, r.x), y0 = std::min(band.y, r.y);
+      band = {x0, y0, std::max(band.r(), r.r()) - x0, std::max(band.b(), r.b()) - y0};
+    }
+    c.fill(band.grow(2 * s), p.bg, 1 - li);
+  }
+  draw_swap(c, now);  // (the list changing look: the old one leaving, the new one rising in)
   if (menu_fade_.v > 0) {
     // it unfolds from the ···: a short fade and a 3 px drop, and leaves the same way
     double k = ease_out(menu_fade_.v);
@@ -863,14 +1376,14 @@ void HomeView::render(Canvas& c, double now) {
       ir.y -= dy;
       double ha = menu_ ? hov(id) : 0.0;
       if (ha > 0) c.cornered(ir, s, p.hover, ha * k);
-      if (id == kMenuClear && i > 0) c.fill(ir.x + 2 * s, ir.y - (kMenuRule / 2 + 1) * s, ir.w - 4 * s, s, p.edge, k);
-      bool chosen = id >= kLangOpt && id - kLangOpt - 1 == language;
+      if (id == kMenuClear && i > 0) c.fill(ir.x + 4 * s, ir.y - (kMenuRule - kMenuRule / 2) * s, ir.w - 8 * s, s, p.edge, k);  // (the player's hairline)
+      bool chosen = (id >= kLangOpt && id - kLangOpt - 1 == language) || (id == kMenuCovers && covers);
       if (chosen) c.bitmap(bmp("check"), ir.x + 5 * s, ir.y + (ir.h - 5 * s) / 2 / s * s, s, p.fg, k);
       const char* ic = id == kMenuFolder ? "cue:open-file" : id == kMenuLang ? "globe" : id == kMenuRemote ? "phone" : id == kMenuClear ? "cross" : nullptr;
       if (ic) action_icon(c, ic, {ir.x + 3 * s, ir.y, 12 * s, ir.h}, s, mix(p.dim, p.fg, ha), k);
       int ty = ir.y + (ir.h - 12 * s) / 2 + s;
       text(c, menu_label(id), ir.x + 23 * s, ty, s, chosen ? p.fg : mix(p.dim, p.fg, ha), k);
-      if (id == kMenuLang) c.bitmap(bmp("chev-right5"), ir.r() - 8 * s, ir.y + (ir.h - 5 * s) / 2 / s * s, s, mix(p.dim, p.fg, ha), k);
+      if (id == kMenuLang) c.bitmap(bmp("chev-right5"), ir.r() - (int)std::lround(5 * s) - (int)std::lround(3 * s), ir.y + (ir.h - 5 * s) / 2 / s * s, s, mix(p.dim, p.fg, ha), k);
     }
   }
 
@@ -937,4 +1450,5 @@ void HomeView::render(Canvas& c, double now) {
   if (fa > 0) face.render(c, fa);
   if (egg_ == 1) draw_snow(c, et);
   if (egg_ == 2) draw_hat(c, et);
+  if (iris_opening(now)) iris_cover(c, iris_ease((now - iris_t0_) / kIrisOpen), std::max(1, (int)std::lround(3 * s)));
 }

@@ -57,6 +57,11 @@ struct DeviceTier {
   // Smooth motion (temporal frame blending): never on software rendering, where blending two
   // full frames on the CPU at the monitor's rate makes the film drop frames instead.
   bool allow_smooth_motion() const { return !software(); }
+
+  // "Skip intro" by the sound (reading a few minutes of two episodes in a helper at idle
+  // priority): not on a PC with 2 threads or fewer, nor on software rendering, where even an
+  // idle helper competes with the film's own decoding. The chapters' names still work there.
+  bool sound_parts() const { return !software() && threads > 2; }
 };
 
 // The film's clock (`video-sync`): `display-resample` draws at the screen's refresh rate so the UI

@@ -9,6 +9,7 @@
 #include "../core/audio_mode.h"
 #include "../core/cover_turn.h"
 #include "../core/model.h"
+#include "../core/skip_parts.h"
 #include "../core/media_info.h"
 #include "../core/subtitle_selection.h"
 #include "anim.h"
@@ -27,6 +28,12 @@ struct PlayInput {
   double preview_aspect = 0;  // current file's display aspect, known before its first thumbnail
   bool muted = false;
   std::vector<Track> subs, audios;
+  std::vector<Track> all_audio;  // (every sound track, also one the engine cannot play: audios lists only those it can)
+  std::vector<Chapter> chapters;  // in order of time (the engine's chapter list)
+  uint64_t chapters_revision = 0;
+  // the parts a viewer may skip (recap, opening, ending, preview): from the chapters' names and,
+  // for an episode without them, from its sound (see core/skip_parts.h)
+  std::vector<SkipPart> skip_parts;
   uint64_t tracks_revision=0;  // metadata/track list changes, not playback ticks
   int64_t sid = 0, aid = 0;  // 0 = none
   SubtitleSelection sub_selection;  // the latest requested track until its command finishes
@@ -63,6 +70,9 @@ struct PlayInput {
   bool queue_active=false;
   bool has_next = false;
   bool has_prev = false;  // an explicit queue has an entry before the playing one
+  // music's level as the light's meter hears it (0..1, smoothed) and the meter's clock (s); a level
+  // below 0: nothing is measured now (Micro's equalizer rests)
+  double music_level = -1, music_level_t = 0;
   bool ended = false;          // stopped on the last frame (the controls stay in view)
   // what this platform offers (the macOS and Linux ports have no ambient light or phone remote yet)
   bool ambient_available = true;
@@ -75,11 +85,13 @@ struct PlayInput {
   int music_look = 0;  // 0 cover and spectrum, 1 spectrum only, 2 cover only
   bool music_mono = false;  // music in black and white
   bool cover_tilt = true;   // the cover leans under the pointer (a choice; on by default)
+  bool home_covers = true;  // the home's recents with their pictures (Settings over the home)
   bool settings_examples = true;   // Settings shows each setting at work (the "i" in its header)
   int mini_sub_size = 0;    // the film's mini player's subtitles: 0 as the full player's (kept readable), 1 larger, 2 largest
   bool mini_player = false;      // the window is the mini player (small, in a corner, on top)
   bool smooth_available = false; // the film's frame rate does not match the screen's: smoothing helps
   bool smooth_motion = false;    // blend frames at their changes (no judder on pans), a choice (off by default)
+  bool chapters_on = true;       // chapters shown and used (Settings; when off, `chapters` stays empty)
   std::string music_title, music_artist;
   // the card's cover drawn by Cue (the spectrum-alone look has no cover in the engine's picture):
   // read ahead at the card's size; shown while the card is up and no turn is drawing it
@@ -93,11 +105,16 @@ struct PlayInput {
   // the engine draws the opening iris on the picture (its video shader): the interface keeps the
   // iris's timing but draws no full-window bitmap for it
   bool iris_engine = false;
+  // the subtitle style's sample, drawn by the platform with the real typeface (premultiplied,
+  // transparent around it) for `sub_sample_for` (sample_request()); empty: the pixel font stands in
+  std::shared_ptr<const Canvas> sub_sample;
+  std::string sub_sample_for;
 };
 
 enum class PA {
   TogglePause, SeekRel, SeekAbs, SeekAbsExact, Volume, ToggleMute, Fullscreen, SelectSub, SelectAudio, AudioMix,
   AddSubFile, OpenFile, CloseVideo, Style, StyleLive, StyleDefault, SubDelay, SubVisible, Placement, SubLift,
+  SubDim,  // v: 0..1, how much of the subtitle shows (a panel over it dims it)
   WinMin, WinMax, WinClose, WinPin, WinDragBegin, WinDragEnd, Preview, Speed, SaveFrame, UiScale, Ambient, AmbientStrength,
   OpenFrameFolder, OpenLinkedIn, OpenGitHub, OpenEmail, OpenLicenses, FileInfo, ControlsFree, Update, Loop, SubEdit,
   Language,  // v: -1 automatic, else i18n::Lang
@@ -106,11 +123,15 @@ enum class PA {
   MusicLook,  // v: 0 cover and spectrum, 1 spectrum only, 2 cover only
   MusicMono,  // v: 0 colour, 1 black and white
   CoverTilt,  // v: 0 still, 1 leans under the pointer
+  ChaptersOn,  // v: 0 a film's chapters ignored, 1 shown and used
   MiniPlayer,    // v: 1 into the mini player, 0 back
   Shuffle,       // v: 1 on, 0 off (music)
   SmoothMotion,  // v: 0 off, 1 on
   SettingsExamples,  // v: 0 the settings alone, 1 each one shown at work
-  MiniSubSize        // v: 0, 1, 2 (the film's mini player's subtitles)
+  MiniSubSize,       // v: 0, 1, 2 (the film's mini player's subtitles)
+  AddAudioFile,      // a film: an audio file of its own (a dub, a commentary) joins its tracks
+  SkipPart,          // v: where the part's skip lands (s): past the opening, the credits...
+  HomeCovers         // v: 1 the home's recents with their pictures, 0 a list of words
 };
 struct PlayAction { PA a; double v = 0; int64_t id = 0; };
 
@@ -123,11 +144,15 @@ struct Layer {
   int lx = -1, ly = -1, la = -1;
   const void* lsrc = nullptr;
   uint64_t lgen = 0;
+  // the last change was a move alone (restage: the same pixels somewhere else). The app sends
+  // the picture the engine already holds, not a copy of it (a list 1470 x 1547 at 4K is 9 MB,
+  // copied every frame it glided). Cleared by the app at each upload
+  bool moved_only = false;
 };
 
 class PlayView {
  public:
-  enum { L_ART, L_MUSIC, L_NEXT, L_DOCK, L_PANEL, L_TOAST, L_TIP, L_G0, L_G1, L_G2, L_HINT, L_WIN, L_FLASH, L_BACK, L_IRIS, L_COUNT };
+  enum { L_ART, L_MUSIC, L_REST /* Micro at rest, or the tall window's queue */, L_NEXT, L_DOCK, L_PANEL, L_TOAST, L_SKIP, L_TIP, L_G0, L_G1, L_G2, L_HINT, L_WIN, L_FLASH, L_BACK, L_IRIS, L_COUNT };
   PlayInput in;
   DockPlace place;
   std::array<Layer, L_COUNT> layers;
@@ -155,6 +180,7 @@ class PlayView {
 
   void mouse_move(int x, int y, double now);
   void pointer_left();  // the pointer left the window: a tilted cover settles back
+  void rehover(double now);  // the bar came or slid under a pointer at rest: what is under it, again
   // music: the cover's turn (degrees) and how much of its light shows, for the shader
   struct CoverTilt { double rx = 0, ry = 0, k = 0; };
   CoverTilt cover_tilt() const { return {cov_rx_.x, cov_ry_.x, cov_k_}; }
@@ -171,6 +197,14 @@ class PlayView {
   bool set_shift(bool on);  // Shift held or let go (a dragged bar: centred while it is held); true: it moved
   bool dock_dragging() const { return dragging_dock_; }
   void toast(const std::string& text, const char* icon, double now, bool icon_after = false);
+  void resume_notice(double at, double now);
+  // the home's "configurações": this view's own Settings panel, alone, rising from that line (the
+  // home draws its panel layers over itself; back and Esc close it, there is no "..." under it)
+  void open_settings_over_home(const Rect& anchor, double now);
+  void move_over_home(const Rect& anchor);
+  bool over_home() const { return anchored_ && panel_ != Panel::None; }
+  bool over_home_hit(int x, int y) const { return over_home() && panel_rect().contains(x, y); }
+  void close_over_home() { if (over_home()) close_panel(); }  // "▸ 12:34" at the top: where a film was taken up again
   // "frame saved ✓ | folder": stays a little longer, and its folder button opens where the frame went
   void set_next_details(const std::string& name);
   void set_next_picture(const std::vector<uint32_t>& pixels,int w,int h);
@@ -187,6 +221,8 @@ class PlayView {
   void remote_toggle_pause(double now) { activate(B_PLAY, now); }
   void remote_act(PA a, double v = 0, int64_t id = 0) { act(a, v, id); }
   void flash_pause(bool paused, double now);
+  void flash_seek(int sec, double now);    // the keyboard's seek, at the window's edge
+  void flash_volume(double v, double now); // the volume's meter, at the right edge
   // timeline preview: a small frame near the hovered time (BGRA, opaque)
   void set_thumb(const std::vector<uint32_t>& px, int w, int h, double t);
   int thumb_width() const { return 80 * s_; }
@@ -269,6 +305,7 @@ class PlayView {
     if (next_vis_.v != (next_wanted() ? 1.0 : 0.0) || !next_drop_.settled()) return true;
     if (vis_.v > 0 || vis_.target > 0 || pvis_.v > 0 || edit_.x > 0 || edit_.target > 0 || iris_ != 0 || sub_settling_ || dragging() || pending_click_ != P_NONE) return true;
     for (auto& L : layers) if (L.dirty) return true;
+    if (skip_alpha_ > 0 || (skip_i_ >= 0 && last_now_ - skip_t0_ < kSkipFirst + 0.4)) return true;  // (while it shows: its line moves)  // "skip intro" coming or going
     return !toast_text_.empty() || last_now_ - flash_t0_ < 0.9;
   }
   double lifted_pos() const;  // sub-pos to apply now (rises above the dock)
@@ -280,9 +317,9 @@ class PlayView {
  private:
   enum Btn { B_NONE = 0, B_VOL, B_VOLBAR, B_REW, B_PLAY, B_FWD, B_CC, B_AUDIO, B_FS, B_MORE, B_TIMELINE, B_DOCKBG, B_SPEED, B_TIME, B_LOOP, B_QUEUE, B_NEXT, B_PREV, B_EXPAND, B_MINI, B_SHUFFLE, B_COUNT };
   enum class Panel { None, CC, Style, Audio, AudioMix, More, Speed, Context, About, FileInfo, Language, Queue, Keys, Volume, Interface, Settings,
-                     SubMini };  // SubMini: the film's mini player's subtitles (a few rows: on, which, how big)
+                     SubMini, Chapters, VideoSet, MusicSet };  // VideoSet, MusicSet: Settings' pages for films and for music; SubMini: the film's mini player's subtitles (a few rows: on, which, how big)
   enum class RK { Header, Option, Action, Submenu, Slider, Fonts, Stepper, Segmented, Hint, Separator, Links, Toggle,
-                  SpeedBar, Chips, Brand, Credit, Profile, Info, CloseHeader, Contacts, Keys, Tools, VSlider, Preview, Picker };
+                  SpeedBar, Chips, Brand, Credit, Profile, Info, CloseHeader, Contacts, Keys, Tools, VSlider, Preview, Picker, Sample };
   enum RowId {
     R_NONE, R_SUB_TOGGLE, R_SUB_TRACK, R_ADD_SUB, R_STYLE, R_DELAY, R_BACK, R_FONTS, R_SIZE, R_TEXT, R_BG, R_OUTLINE, R_LINEGAP, R_TRACK,
     R_ASS, R_LINKS, R_AUDIO_TRACK, R_AUDIO_MIX, R_AUDIO_MIX_TRACK, R_AUDIO_MIX_ALL, R_BACK_AUDIO, R_STYLE_RESET, R_OPEN, R_CLOSE, R_SPEED, R_SPEED_OPT, R_BACK_MORE, R_UISCALE, R_AMBIENT,
@@ -290,12 +327,14 @@ class PlayView {
     R_ABOUT, R_LINKEDIN, R_GITHUB, R_EMAIL, R_CONTACTS, R_LICENSES, R_FILE_INFO, R_DISMISS, R_CONTROLS_FREE, R_UPDATE,
     R_LANGUAGE, R_LANG_OPT, R_REMOTE, R_QUEUE, R_MUSIC_LOOK, R_MUSIC_COLOR, R_KEYS, R_COVER_TILT,
     R_VOLUME, R_MUTE, R_OVF_LOOP, R_OVF_CC, R_OVF_AUDIO, R_MINI, R_SMOOTH, R_TOOLS, R_INTERFACE,
-    R_SETTINGS, R_BACK_SETTINGS, R_PREVIEW, R_SUB_PICK, R_SUB_SIZE
+    R_SETTINGS, R_BACK_SETTINGS, R_PREVIEW, R_SUB_PICK, R_SUB_SIZE, R_ADD_AUDIO, R_CHAPTERS, R_CHAPTER, R_CHAPTERS_ON,
+    R_VIDEO_SET, R_MUSIC_SET, R_HOME_COVERS
   };
   struct Row {
     RK k;
     RowId id = R_NONE;
     std::string label, right;
+    std::string reason;  // unavailable: why, said beside it (dark grey)
     bool checked = false;
     bool enabled = true;
     int64_t track = 0;
@@ -329,7 +368,10 @@ class PlayView {
   Fade queue_mark_{0,0,.12,.14};
   int w_ = 0, h_ = 0; double s_ = 2, base_s_ = 0;
   std::vector<PlayAction> acts_;
-  void act(PA a, double v = 0, int64_t id = 0) { acts_.push_back({a, v, id}); }
+  void act(PA a, double v = 0, int64_t id = 0) {
+    if (a == PA::SeekRel || a == PA::SeekAbs || a == PA::SeekAbsExact) chap_seek_t_ = -1;  // (a chapter step sets it again after)
+    acts_.push_back({a, v, id});
+  }
 
   // dock
   int dw_ = 0, dh_ = 0;  // physical
@@ -341,7 +383,7 @@ class PlayView {
   bool dock_dirty_ = true;
   Canvas dock_base_;
   uint64_t dock_gen_ = 0, panel_gen_ = 0, toast_gen_ = 0;
-  std::array<int64_t, 17> dock_state_{};
+  std::array<int64_t, 18> dock_state_{};
   int layout_speed_w_ = -1;  // width of the speed label the dock was laid out for
   double style_mix_ = 0;
   PolishedMotion style_motion_;
@@ -362,7 +404,26 @@ class PlayView {
   std::array<double, B_COUNT> hov_{};  // hover fade per dock button
   // magnetic hover: each icon leans (physical px) toward the cursor inside its hitbox
   std::array<Spring, B_COUNT> magx_{}, magy_{};
+  // The bar's switches changing state (repeat: off, the list, this one; shuffle; subtitles): the
+  // colour comes on (or goes) on a short motion, the underline pixel and repeat's "1" fade in, and
+  // as it comes on the icon lights up bright for a moment and settles into the film's colour.
+  // Nothing moves: at the bar's few pixels a glyph that moved read as a glitch (it jumped).
+  struct SwitchFx {
+    EaseOutMotion lit, dot, one, flash;
+    int state = -1;  // last seen (-1: not yet: the first is taken as it is, never animated)
+  };
+  enum { SF_LOOP, SF_SHUFFLE, SF_CC, SF_MUTE, SF_COUNT };
+  std::array<SwitchFx, SF_COUNT> sfx_{};
+  bool step_switches(double dt);
+  int switch_of(int id) const { return id == B_LOOP ? SF_LOOP : id == B_SHUFFLE ? SF_SHUFFLE : id == B_CC ? SF_CC : id == B_VOL ? SF_MUTE : -1; }
   bool remaining_ = false;
+  // the speed's number rolls when it changes (16/11): the old one leaves up (or down, going
+  // slower), the new one comes from the other side; whole pixels of art, 0.18 s
+  std::string speed_shown_;        // the number on the button now
+  std::string speed_roll_from_;    // the one leaving
+  double speed_roll_t0_ = -10;
+  int speed_roll_dir_ = 1;         // +1 faster (rolls up), -1 slower (rolls down)
+  static double next_speed(double v);  // the click's cycle: 1, 1.25, 1.5, 2, 0.5, then 1 again
   bool compact_ = false;           // the bar is narrower than all its buttons need
   // The bar by priority (see layout_dock): as the window narrows it first shortens the volume
   // line, then folds the volume into its icon (a click opens it above) and hands its least
@@ -377,10 +438,57 @@ class PlayView {
   bool vol_folded_ = false;        // the volume line is folded into its icon
   bool dur_shown_ = true;          // the duration beside the timeline (a narrow bar drops it)
   bool mini_ = false;              // mini player: play, volume, the timeline, back to full size and "..."
+  bool film_bar_ = false;          // the film's own bar (not music's, not the mini player's): mockup of 16/11
   bool mini_row_ = false;           // the film's mini player: two rows on its bottom edge, no bar behind them
   bool mini_times_ = false;         // the film's mini player shows the times beside its timeline
   double mini_t0_ = 0, mini_t1_ = 0;  // where they go (art px)
   bool card_ = false;
+  // the card's own compositions for a song in a small window (the rascunho of 14/11): 0 the mini
+  // player's card; 1 Compacto (the cover large, the timeline on its foot, previous · play · next
+  // under it); 2 Micro (the cover is the window); 3 Micro in a strip (a thumbnail, the words, the
+  // playback on the right). 1-3: the spectrum's wings step out, as in the mini player
+  int cmode_ = 0;
+  int micro_k_ = 1;  // Micro: how many times larger its playback is drawn
+  int card_mode_for() const;   // the composition the app's frame asks for now
+  uint32_t layouts_ = 0;       // how many times the bar was laid out (tests: never again and again at rest)
+  bool layout_fila_ = false;   // the tall window's queue was wanted when the bar was laid out
+public:
+  int music_card_mode() const { return cmode_; }
+  // a song in a window smaller than the full composition (Compacto, Micro, the strip, wide and
+  // low, tall, or the list's header there): its bar is always without background (15/11: the
+  // background took room those windows do not have); the choice stays for the full window
+  bool music_small_window() const {
+    return in.audio_only && in.cover_scene && !in.fullscreen && (card_ || (in.music_view.f > 0 && in.music_view.frame != MusicFrame::Centre));
+  }
+  // Micro at rest (no pointer): an equalizer of four pixel bars at the cover's foot on the left,
+  // moving with the song (still when paused, with reduced motion or with nothing measured), and
+  // the progress a thin line on the cover's bottom edge. True when its picture would change: the
+  // app asks at its poll and draws a frame only then
+  bool micro_rest_due() const;
+  double DWi_micro() const { return dw_ / std::max(0.5, s_); }  // (Micro: the cover's side, art px)
+private:
+  // tall (the rascunho's 3): the queue under the words (see render_fila)
+  static constexpr double kFilaHead = 20, kFilaRow = 26;  // art px: the heading with its rule, a song's line
+  Rect fila_{};             // its place (px); empty: no queue, or no room for one
+  int fila_hot_ = -1;       // the song under the pointer (its place in the queue)
+  int fila_top_ = 0;        // the first song shown
+  uint32_t fila_seen_ = 0;  // the playing song the list last brought into view
+  Canvas fila_base_;
+  uint64_t fila_gen_ = 0;
+  std::array<int64_t, 10> fila_key_{};
+  int fila_shown() const;
+  uint32_t fila_playing() const;
+  void fila_follow();
+  int fila_row_at(int x, int y) const;
+  void render_fila();
+public:
+  Rect music_queue_rect() const { return fila_; }  // tests and previews
+  bool music_card_wings() const { return cmode_ == 4 || cmode_ == 5; }  // the card's compositions that keep the spectrum's wings
+private:
+  Canvas rest_base_;
+  uint64_t rest_gen_ = 0;
+  std::array<int, 6> rest_key_{-1, -1, -1, -1, -1, -1};  // the four bars' heights, the line's played px, its width
+  std::array<int, 6> micro_rest_now() const;
   bool expand_on_release_ = false;  // the mini player's corner arrow: back to full size on release              // a song's mini player: cover left, words and bar beside it
   Rect card_cover_{}, card_col_{};
   bool stack_ = false;             // music framed close, and a song's mini player: cover, words, bar as one
@@ -421,11 +529,22 @@ class PlayView {
   int still_x_ = -1, still_y_ = -1;  // where the pointer rested when the dock left (jitter guard)
   bool swallow_up_ = false;        // the press closed a panel: its release does nothing
   int ctx_x_ = 0, ctx_y_ = 0;      // context menu anchor
+  bool anchored_ = false;          // the panel opened from the home (see open_settings_over_home)
+  Rect anchor_{};
   Rect closing_rect_;              // a closing panel fades where it was
   int contact_k_ = 0;              // About's contact icons: the one the keyboard is on
   double queue_s_ = 2;  // the up-next panel's own scale (compacted in small windows)
   std::string flash_text_;
   int flash_icon_ = -1;            // -1 text, 0 play, 1 pause
+  // (16/11, Biel's preview `proposta-avisos-teclado-final.png`) the keyboard's own feedback, without a box:
+  // 0 the old text in a box (repeat, speed, the bar's -15/+15), 1 play/pause in the middle (the bar's glyph,
+  // morphing), 2 a seek at the window's left/right edge ("◀◀ 5 s", summed while keys follow), 3 the volume as a
+  // short meter at the right edge
+  int flash_kind_ = 0;
+  int flash_seek_ = 0;             // seconds, signed, summed while the sign stays up
+  bool bar_press_ = false;         // a button of the bar pressed with the pointer (no sign: see flash_pause)
+  double flash_vol_ = 0;
+  double flash_mt_ = -1;           // the play/pause morph last drawn
   double flash_t0_ = -10;
   double last_now_ = 0;
   uint64_t flash_gen_ = 0;
@@ -439,6 +558,7 @@ class PlayView {
   int press_x_ = 0, press_y_ = 0;
   bool win_drag_ = false;
   bool close_on_release_ = false;
+  bool fs_on_release_ = false;  // Micro's corner button: full screen on release
   static constexpr int kStrip = 26;  // top strip (art px) that drags the window
   bool sub_draggable() const;
   Canvas thumb_;
@@ -461,7 +581,12 @@ class PlayView {
   // the subtitle's way back: to the person's default (or Cue's), and once more to undo it
   SubStyle undo_style_, undo_target_;
   bool undo_ok_ = false, resetting_ = false;
-  bool style_customized() const { return in.style != in.default_style || in.style != SubStyle{}; }
+  // something to restore (the line's place does not count: a restore leaves it where it is)
+  bool style_customized() const {
+    SubStyle mine = in.default_style, factory;
+    mine.pos = factory.pos = in.style.pos;
+    return in.style != mine || in.style != factory;
+  }
   void reset_style(double now);
   static constexpr double kSnap = 28;  // art px: a dock place pulls, and catches it when dropped
   int ghost_ = -1, ghost_drawn_ = -2;  // the place the dock would land in (-1: none)
@@ -560,7 +685,28 @@ class PlayView {
   bool drop_opened_ = false;  // the list was opened by files being dragged in
   bool panel_dirty_ = true;
   Canvas panel_base_;
+  // Settings' "i" (its examples on or off): the menu changes size; its box glides from the old
+  // size to the new one (the corner it hangs from stays put) while the old content fades out and
+  // the new fades in, instead of jumping
+  Canvas morph_old_, morph_canvas_;
+  Rect morph_from_{};
+  double morph_t0_ = -1;
+  uint64_t morph_gen_ = 0;
+  bool morphing(double now) const { return morph_t0_ >= 0 && now - morph_t0_ < kMorphDur; }
+  static constexpr double kMorphDur = 0.26;
+  void morph_frame(Layer& PL, const Rect& to, double alpha, int rise_y, double now);
 
+  // The two long lists, the subtitle tracks and a film's chapters, scroll inside the menu; only
+  // their rows move, the rows around them stay where they are.
+  bool list_panel() const { return panel_ == Panel::CC || panel_ == Panel::Chapters; }
+  RowId list_row() const { return panel_ == Panel::Chapters ? R_CHAPTER : R_SUB_TRACK; }
+  // chapters: Page Up / Page Down step through them; a press before the last one's jump has
+  // landed counts from where that jump goes (in.time still says where the film was)
+  double chap_seek_t_ = -1, chap_seek_at_ = -1e9;
+  int chapters_built_k_ = -2;
+  uint64_t chapters_rev_built_ = 0;  // the chapter the open list marks (rebuilt when playback moves on)
+  void chapter_step(int dir, double now);
+  double chapter_base(double now) const;  // where the next chapter step counts from
   // Only track rows scroll; their original labels and stable IDs are retained.
   double cc_scale_=2;
   int cc_first_=1,cc_count_=0,cc_row_h_=36;
@@ -599,6 +745,34 @@ class PlayView {
   double toast_alpha_ = 0;
   Rect toast_rect_, toast_btn_rect_;  // window coords / toast-local
   bool toast_hit(int x, int y, bool* on_btn) const;
+  // the notice of a film resumed ("▸ 12:34"): with the pointer on it, it reads "from the start"
+  // and a click (or Home while it shows) goes back to 0:00, with the same dark passage as a skip
+  bool toast_resume_ = false;
+  void resume_from_start(double now);
+
+  // "Skip intro": over the bar's right end while a part to skip plays. It shows for its first
+  // 10 s, then with the rest of the controls; the click (or Enter) jumps to the part's end.
+  int skip_i_ = -1;              // the part offered (index in in.skip_parts), -1 for none
+  int skip_left_ = -1;           // the part just skipped (its time may lag the jump a moment)
+  SkipKind skip_kind_ = SkipKind::None;
+  double skip_t0_ = -10;         // when that part began to be offered
+  static constexpr double kSkipFirst = 8;  // its first showing, counted down
+  int skip_line_ = -1;           // the countdown line's length as last staged
+  double skip_alpha_ = 0;
+  bool skip_hot_ = false, skip_dirty_ = true;
+  Rect skip_rect_{};             // window coords
+  Canvas skip_base_;
+  uint64_t skip_gen_ = 0;
+  int skip_step_ = 0, skip_drain_ = -1;  // the arrows' step and the line's length, as last drawn
+  void update_skip(double now);  // which part plays, and the button's picture
+  double skip_leave_t0_ = -10, skip_leave_a_ = 0;  // its click: when, and how visible it was
+  bool skip_hit(int x, int y) const { return skip_i_ >= 0 && skip_alpha_ >= 0.5 && skip_rect_.w > 0 && skip_rect_.grow((int)s_).contains(x, y); }
+  void skip_now();
+ public:
+  // the part offered now, for the phone ("opening"... or "" for none) and where its skip lands
+  std::string offered_skip(double* to) const;
+  void remote_skip() { skip_now(); }  // the phone's "skip": the same as the click
+ private:
 
   // back to the home: a small arrow in the top-left corner, with the rest of the UI
   Fade back_vis_{0, 0, 0.14, 0.30};
@@ -615,6 +789,7 @@ class PlayView {
   Spring tipx_{55, 1.0, 0.3};    // the preview glides after the cursor, ~35 ms behind, no wobble
   Fade tipvis_{0, 0, 0.08, 0.09};
   std::string tip_ts_;           // last time shown, kept while it fades out
+  std::string tip_chapter_;      // "5 · A travessia": the chapter of that moment ("" without chapters)
   bool tip_want() const;
   void tip_frame_size(int& W, int& H) const;
   void tip_size(int& W, int& H) const;
@@ -644,7 +819,7 @@ class PlayView {
   // Settings: what Cue keeps between files (the light, smoothing, the interface's size and
   // style, the language), each shown at work in a small picture at the top of the panel as the
   // pointer (or the keyboard) rests on it, with a line that says what it does
-  enum Demo { D_AMBIENT, D_SMOOTH, D_SIZE, D_BG, D_LANGUAGE, D_LOOK, D_COLOR, D_TILT, D_ABOUT };
+  enum Demo { D_AMBIENT, D_SMOOTH, D_SIZE, D_BG, D_LANGUAGE, D_LOOK, D_COLOR, D_TILT, D_ABOUT, D_CHAPTERS, D_VIDEO, D_MUSIC };  // (D_VIDEO, D_MUSIC: the pages' rows, drawn as the light and the looks)
   int demo_ = D_AMBIENT;       // what the picture shows (the last setting pointed at)
   int demo_seg_ = -1;          // a segment under the pointer (size, background): shown before it is taken
   double demo_t0_ = 0;         // when the picture changed (it fades in)
@@ -653,12 +828,22 @@ class PlayView {
   Canvas hints_canvas_;  // clipped to the hint column; released when hidden/closed
   int demo_frame_ = -1;        // the moving pictures are drawn at 30 frames a second
   bool settings_compact_ = false;  // a short window: no picture, only the settings
+  // the interface's page shows Settings' picture as Settings does (on top or beside, with the "i"
+  // on); itf_pic_ goes off only when the page with it cannot fit the window
+  bool itf_pic_ = true;
+  // Settings' pages (interface, video, music): Settings' width and picture, back goes to Settings
+  static bool settings_page(Panel p) { return p == Panel::Interface || p == Panel::VideoSet || p == Panel::MusicSet; }
+  bool settings_page() const { return settings_page(panel_); }
+  bool pic_page() const { return panel_ == Panel::Settings || (settings_page() && itf_pic_); }
+  bool pic_top() const { return pic_page() && in.settings_examples && !settings_compact_; }
+  bool pic_side() const { return pic_page() && settings_side_; }
   bool settings_side_ = false;     // a short, wide window: the picture beside the rows, on the left
   bool settings_fold_ = false;
   bool settings_tight_ = false;    // shorter still: the groups closer together (settings_fold_: the interface one row deeper)
   // the layouts Settings tries, in order, until one fits (see kSettingsStages): with the examples,
   // the picture on top, beside the rows, then the rows closing up, and only then no picture
   int settings_stage_ = 0;
+  bool settings_no_side_ = false;  // over the home, beside would cover the line (a short window): not beside
   double panel_fit_ = 0;             // > 0: a menu's scale stepped down so it fits whole (see layout_rows)
   bool panel_fit_wanted() const;
   double panel_draw_s() const;       // the open menu's scale: panel_s(), or smaller to fit
@@ -672,6 +857,29 @@ class PlayView {
   bool switch_on() const { return panel_ == Panel::More || panel_ == Panel::Settings ? in.ambient : panel_ == Panel::Context ? in.cover_tilt : (in.sid != 0 && in.sub_visible); }
   void layout_rows();
   int slider_label_w() const;
+  // The one panel: the big panels (Settings and its pages, the subtitles, their style, up next,
+  // chapters, the file's details) share one width and one place, their right edge on the bar's,
+  // the same distance above it. Small menus (audio, speed, "...") open over their own button.
+  bool big_panel() const;
+ public:
+  // The style panel's sample: what the platform should draw (the box's size in px, the style,
+  // the words), "" when no sample is shown. Its key goes back in in.sub_sample_for.
+  struct SampleRequest { int w = 0, h = 0; double px = 0; SubStyle style; std::string text, key; };
+  SampleRequest sample_request() const;
+  // the App's picture of that line (drawn by Windows in the real font); the panel draws again
+  void set_sub_sample(std::shared_ptr<const Canvas> pic, std::string key) {
+    in.sub_sample = std::move(pic);
+    in.sub_sample_for = std::move(key);
+    panel_dirty_ = true;
+  }
+ private:
+  bool big_panel(Panel p) const;
+  int big_width();                 // art px, the widest of the big panels' rows in this language
+  int big_w_ = 0;
+  std::string big_key_;
+  int rows_need_w() const;         // art px the current rows need
+  int seg_need(const Row& r) const;
+  Rgb state_ink() const;           // a state that is on: the film's colour, never too dark to read
   int slider_value_w() const;
   int seg_inset() const;
   bool seg_inset_on_ = false;
@@ -699,9 +907,16 @@ class PlayView {
   EaseOutMotion subtitle_lift_;  // moves with the dock: starts on the same tick, lands with it
   bool sub_was_shown_ = false;
   double wanted_subtitle_lift() const;
+  // a panel over the subtitle: the line stays where it is and steps back (dims) under it, and
+  // comes back when the panel goes. Only text the engine colours (not original ASS, not images).
+  double wanted_subtitle_dim() const;
+  EaseOutMotion subtitle_dim_ = [] { EaseOutMotion m; m.snap(1); return m; }();
+  double last_dim_ = 1;
+  bool dim_was_shown_ = false;
+  static constexpr double kSubDim = 0.28;
   mutable bool lift_cache_valid_=false;
   mutable SubStyle lift_style_;
-  mutable Rect lift_dock_;
+  mutable Rect lift_dock_, lift_panel_;
   mutable int lift_w_=0,lift_h_=0,lift_lines_=0,lift_chars_=0;
   mutable double lift_scale_=0,lift_value_=0;
   mutable std::vector<std::string> lift_text_;

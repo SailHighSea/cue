@@ -1,5 +1,6 @@
 // Queue behavior with a mock player and real Chromium DOM/fetch/layout.
 const {chromium}=require('playwright');
+const auth=require('./remote_auth_fixture.cjs');
 const fs=require('fs'),http=require('http'),assert=require('assert'),path=require('path');
 process.chdir(path.join(__dirname,'..'));
 const html=fs.readFileSync('assets/remote/index.html','utf8');
@@ -8,7 +9,7 @@ const items=[{id:41,name:'First.mkv',current:true},{id:73,name:'<script>second</
 const server=http.createServer((req,res)=>{
  if(req.url==='/font.ttf'){res.end(fs.readFileSync('assets/fonts/CueOmni.ttf'));return;}
  if(req.url==='/queue'){
-  assert.equal(req.headers.authorization,'Bearer '+'a'.repeat(64));
+  assert(auth.signed(req,'a'.repeat(64)),'signed request: '+req.url);
   return setTimeout(()=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({items}));},delay);
  }
  if(req.url.startsWith('/list')){const p=new URL(req.url,'http://local').searchParams.get('p')||'';res.setHeader('Content-Type','application/json');res.end(JSON.stringify(p?{path:p,parent:'',title:'Videos',items:[{name:'Added.mp4',path:'C:\\Videos\\Added.mp4'}]}:{path:'',parent:'',title:'',items:[{name:'Videos',path:'C:\\Videos',dir:true}]}));return;}
@@ -26,8 +27,8 @@ const server=http.createServer((req,res)=>{
   page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(()=>{
    localStorage.setItem('cue.token.v2','a'.repeat(64));window.sent=[];
-   window.WebSocket=class {constructor(){window.ws=this;this.readyState=1;setTimeout(()=>this.onopen(),0);}
-    send(text){const m=JSON.parse(text);if(m.t==='auth'){setTimeout(()=>{this.onmessage({data:JSON.stringify({t:'hello'})});window.publish();},0);}else window.sent.push(m);}
+   window.WebSocket=class {constructor(){window.ws=this;this.readyState=1;setTimeout(()=>{this.onopen();this.onmessage({data:'{"t":"chal","n":"0123456789abcdef0123456789abcdef"}'});},0);}
+    send(text){const m=JSON.parse(text);if(m.t==='auth'){setTimeout(()=>{this.onmessage({data:JSON.stringify({t:'hello',sid:'a1b2c3d4e5f60718'})});window.publish();},0);}else window.sent.push(m);}
     close(){}
    };
    let rev=1;window.publish=()=>window.ws.onmessage({data:JSON.stringify({t:'state',view:'play',file:'First.mkv',pos:2,dur:100,speed:1,vol:100,paused:false,ended:false,audioOnly:false,sub:{has:false,on:false},audio:{n:1,i:0},timer:{m:0,left:0},next:'second.mp3',nextAuto:true,color:'#123456',queueRevision:rev++})});

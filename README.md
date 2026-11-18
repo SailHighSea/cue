@@ -1,12 +1,30 @@
-![Cue](docs/cue-banner.png)
+<p align="center">
+  <img src="docs/readme/hero.en.png" alt="Cue playing a video, with its ambient light glowing around the window" width="100%">
+</p>
 
-# Cue · .tinypeep
+<h1 align="center">Cue</h1>
 
-**The video is the interface.**
+<p align="center">
+  <b>The video is the interface.</b><br>
+  A free, open-source video and audio player for Windows. Lightweight, local, and built around your content.
+</p>
 
-A free, open-source video and audio player for Windows. Lightweight, local, and built around your content.
+<div align="center">
 
 **[Download Cue](https://github.com/tinypeep/cue/releases/latest)** · [Português](README.pt-BR.md) · [Changelog](docs/CHANGELOG.md) · [Manifesto](MANIFESTO.md)
+
+</div>
+
+<p align="center">
+  <img src="docs/readme/light.en.png" alt="Light that follows the scene: ambient lighting, straight from the video." width="100%">
+</p>
+<p align="center">
+  <img src="docs/readme/music.en.png" alt="Music looks good too: cover art and a pixel spectrum." width="49.2%">
+  <img src="docs/readme/remote.en.png" alt="Your phone is the remote: scan a QR code, no app to install." width="49.2%">
+</p>
+<p align="center">
+  <img src="docs/readme/mini.en.png" alt="Mini player: keep watching while you work." width="100%">
+</p>
 
 ## Made for watching
 
@@ -21,7 +39,7 @@ A free, open-source video and audio player for Windows. Lightweight, local, and 
 
 ## Get started
 
-Download `Cue-1.3.2-Setup.exe` from the [latest release](https://github.com/tinypeep/cue/releases/latest) and run it. **Windows x64.** No administrator privileges required.
+Download `Cue-1.4-Setup.exe` from the [latest release](https://github.com/tinypeep/cue/releases/latest) and run it. **Windows x64.** No administrator privileges required.
 
 Open a file, drag it onto Cue, or use **Open with** in File Explorer.
 
@@ -30,6 +48,7 @@ Open a file, drag it onto Cue, or use **Open with** in File Explorer.
 | Space | Play / pause |
 | F or double-click | Fullscreen |
 | ← / → | Seek 5 seconds |
+| Page Up / Page Down | Previous / next chapter |
 | 0–9 | Seek to 0–90% of a video (full player) |
 | C | Subtitle controls |
 | N / P | Next file, when Cue found one / previous file in the queue |
@@ -57,6 +76,6 @@ The Russian translation was reviewed with help from [omni38](https://github.com/
 
 Cue's code is **GPL-3.0-or-later**. Fonts and third-party components retain their own licenses. See [LICENSE](LICENSE), [copyright](COPYRIGHT.md), and [component licenses](docs/LICENSES.md).
 
-Corresponding playback engine sources are provided as `Cue-1.3.2-Engine-Source.zip` on the [release page](https://github.com/tinypeep/cue/releases/tag/v1.3.2).
+Corresponding playback engine sources are provided as `Cue-1.4-Engine-Source.zip` on the [release page](https://github.com/tinypeep/cue/releases/tag/v1.4).
 
 Forks and modified builds: [NOTICE](NOTICE.md) · [Branding and build identity](docs/BRANDING.md).

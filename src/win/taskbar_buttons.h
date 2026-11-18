@@ -19,6 +19,8 @@ class TaskbarButtons {
     bool operator==(const State&) const = default;
   };
   void sync(const State& s);
+  // the taskbar's light or dark theme changed (WM_SETTINGCHANGE): the marks follow it
+  void theme_changed();
   static bool is_click(WPARAM w) { return HIWORD(w) == 0x1800 /* THBN_CLICKED */ && LOWORD(w) >= kPrevious && LOWORD(w) <= kNext; }
 
  private:
@@ -26,6 +28,7 @@ class TaskbarButtons {
   ITaskbarList3* list_ = nullptr;
   bool added_ = false, com_ = false;
   int icon_size_ = 0;
+  bool light_ = false;  // the taskbar is light (Windows' "system" colour): black marks, else white
   HICON icons_[4]{};  // previous, play, pause, next
   State state_;
   void make_icons();

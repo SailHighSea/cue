@@ -77,13 +77,10 @@ int main() {
   assert(a.a == ObAct::UiScale && a.v == ui_size_choice(2));
   ob.set_size(1280, 720, 2);  // the App applies it
   assert(ob.ui_s == 2);
-  // enter on the size moves on to what is coming; the last button finishes
-  a = ob.key("enter", false, now);
-  assert(a.a == ObAct::None && ob.page() == 3);
-  run(ob, now, 0.8);
+  // the size is the last screen: it draws, and enter there finishes
   {
     Canvas cc;
-    ob.render(cc, now);  // the roadmap rows lay out and draw
+    ob.render(cc, now);
   }
   a = ob.key("enter", false, now);
   assert(a.a == ObAct::Finish);
@@ -98,7 +95,7 @@ int main() {
   double t = 1;
   m.start(t);
   run(m, t, 3.5);
-  ObAction none = m.mouse_down(m.w - 60, m.h - 44, t);  // "continuar"
+  ObAction none = m.mouse_down(m.next_rect().cx(), m.next_rect().cy(), t);  // "continuar"
   assert(none.a == ObAct::None && m.page() == 1);
   run(m, t, 0.8);
   ObAction skip = m.key("esc", false, t);
@@ -112,6 +109,48 @@ int main() {
   Canvas c;
   tiny.render(c, tt);
   assert(c.w == 480 && c.h == 360);
+  // one grid: a size chosen on the third screen changes the controls, never the screen around them
+  {
+    OnboardingView g;
+    for (int i = 0; i < kUiSizes; ++i) g.size_s[i] = ui_scale(96, 1280, 720, ui_size_choice(i));
+    g.set_size(1280, 720, ui_scale(96, 1280, 720, 2));
+    double gt = 1;
+    g.start(gt);
+    const double s0 = g.s;
+    for (int i = 0; i < kUiSizes; ++i) {
+      g.set_scale_choice(ui_size_choice(i), gt);
+      g.set_size(1280, 720, g.size_s[i]);
+      assert(g.s == s0);
+    }
+    // the halo is asked for on the second screen only, with the switch on, and never when maximized
+    assert(g.window_light() == 0);
+    g.go(1, gt);
+    run(g, gt, 1.5);
+    assert(g.window_light() > 0.9);
+    g.light_inside = true;
+    assert(g.window_light() == 0);
+    g.light_inside = false;
+    g.set_ambient(false, gt);
+    run(g, gt, 1.0);
+    assert(g.window_light() < 0.01);
+    g.set_ambient(true, gt);
+    g.go(2, gt);
+    run(g, gt, 1.5);
+    assert(g.window_light() < 0.01);
+    // its colours: every stretch lit, the sky's on top and the ground's below
+    Rgb z[OnboardingView::kZones];
+    double li[OnboardingView::kZones];
+    g.scene_zones(gt, z, li);
+    for (double v : li) assert(v > 0);
+    // nothing to draw while nothing changes: the scene's next picture is a moment away, not now
+    run(g, gt, 0.5);
+    assert(g.next_event(gt) > 0);
+    // the end from a screen without the eyes: dark, then the home's iris (no eyes flying)
+    g.finish(gt, 100, 100, 2);
+    assert(!g.face_handoff());
+    run(g, gt, 0.3);
+    assert(g.finished(gt));
+  }
   std::puts("Welcome: analytic springs at 60/144 Hz and through hitches, Apple-like overshoot, eased exits, "
-            "four screens by keyboard and mouse, live light/size choices and the hand-off to the home passed");
+            "three screens by keyboard and mouse, live light/size choices and the hand-off to the home passed");
 }

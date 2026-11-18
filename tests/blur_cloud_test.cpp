@@ -29,7 +29,7 @@ int main() {
     step(35); auto cloud=p.blur_cloud(); assert(cloud.alpha==1);
     auto& layer=p.layers[PlayView::L_DOCK];
     int white=0, shadow=0;
-    for(auto px:layer.c.px) {if((px>>24)==255){assert(px==0xffffffff);++white;} if(px && (px&0xffffff)==0)++shadow;}
+    for(auto px:layer.c.px) {if((px>>24)==255){const unsigned r=(px>>16)&255,g=(px>>8)&255,b=px&255;assert(r==g&&g==b);if(px==0xffffffff)++white;} if(px && (px&0xffffff)==0)++shadow;}  // (16/11: the quiet buttons rest grey; still no colour)
     assert(white>50&&shadow>50);
     p.changed(t); auto stable=p.dock_signature(); p.in.scene_revision++;p.in.accent={255,0,0};p.in.accent_k=1;p.changed(t);
     assert(p.dock_signature()==stable); // no scene-driven glyph recolouring

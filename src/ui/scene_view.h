@@ -25,4 +25,6 @@ struct SceneView {
   // true while something moves fast (an entrance, an exit): drawn on every display frame;
   // otherwise a calm 30 frames a second is plenty for breathing light
   virtual bool fast(double now) const { (void)now; return true; }
+  // false when the last tick changed nothing on screen: the calm frame is not drawn again
+  virtual bool changed(double now) const { (void)now; return true; }
 };

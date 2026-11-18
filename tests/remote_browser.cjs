@@ -2,6 +2,7 @@
 const {chromium} = require('playwright');
 const fs = require('fs');
 const http = require('http');
+const auth=require('./remote_auth_fixture.cjs');
 const assert = require('assert');
 const path = require('path');
 process.chdir(path.join(__dirname,'..'));
@@ -11,7 +12,7 @@ const catalog = JSON.parse(fs.readFileSync('i18n/pt-BR.json','utf8'));
 const pageHTML=html.replace('<script>','<script nonce="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">').replace('/*CUE_BOOT*/','window.CUE='+JSON.stringify({lang:'pt-BR',strings:catalog})+';');
 const server=http.createServer((req,res)=> {
  if(req.url==='/font.ttf'){res.setHeader('Content-Type','font/ttf');res.end(fs.readFileSync('assets/fonts/CueOmni.ttf'));return;}
- if(req.url.startsWith('/list')){assert(req.headers.authorization==='Bearer '+ 'a'.repeat(64));res.setHeader('Content-Type','application/json');res.end(JSON.stringify({path:'',parent:'',title:'Pastas',items:[{dir:true,name:'Vídeos',path:'C:\\Videos'},{dir:true,name:'Downloads',path:'C:\\Downloads'}]}));return;}
+ if(req.url.startsWith('/list')){assert(auth.signed(req,'a'.repeat(64)),'signed request: '+req.url);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({path:'',parent:'',title:'Pastas',items:[{dir:true,name:'Vídeos',path:'C:\\Videos'},{dir:true,name:'Downloads',path:'C:\\Downloads'}]}));return;}
  res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'nonce-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://127.0.0.1:8123; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");res.setHeader('Content-Type','text/html');res.end(pageHTML);
 });
 (async()=>{
@@ -24,8 +25,8 @@ const server=http.createServer((req,res)=> {
   await page.addInitScript(()=>{
    localStorage.setItem('cue.token.v2','a'.repeat(64));
    window.WebSocket=class {
-    constructor(url){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();},5);}
-    send(data){const m=JSON.parse(data);if(m.t==='auth'){window.__ws=this;setTimeout(()=>{this.onmessage?.({data:JSON.stringify({t:'hello',pc:'Cue PC'})});this.onmessage?.({data:JSON.stringify({t:'state',view:'home',file:'',pos:0,dur:0,speed:1,vol:100,paused:true,ended:false,audioOnly:false,sub:{has:false,on:false,delay:0,size:44,sizeMin:28,sizeMax:72,pos:93,posDefault:93,posMin:12,posMax:97},audio:{n:0,i:0},timer:{m:0,left:0},next:'',color:'#a0508f'})});},5);}}
+    constructor(url){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();this.onmessage?.({data:'{"t":"chal","n":"0123456789abcdef0123456789abcdef"}'});},5);}
+    send(data){const m=JSON.parse(data);if(m.t==='auth'){window.__ws=this;setTimeout(()=>{this.onmessage?.({data:JSON.stringify({t:'hello',sid:'a1b2c3d4e5f60718',pc:'Cue PC'})});this.onmessage?.({data:JSON.stringify({t:'state',view:'home',file:'',pos:0,dur:0,speed:1,vol:100,paused:true,ended:false,audioOnly:false,sub:{has:false,on:false,delay:0,size:44,sizeMin:28,sizeMax:72,pos:93,posDefault:93,posMin:12,posMax:97},audio:{n:0,i:0},timer:{m:0,left:0},next:'',color:'#a0508f'})});},5);}}
     close(){this.readyState=3;}
    };
   });

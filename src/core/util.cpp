@@ -10,11 +10,12 @@
 
 std::string fmt_time(double sec, bool force_hours) {
   if (!std::isfinite(sec) || sec < 0) sec = 0;
-  long t = (long)sec;
-  long h = t / 3600, m = (t / 60) % 60, s = t % 60;
-  char buf[32];
-  if (h > 0 || force_hours) std::snprintf(buf, sizeof buf, "%ld:%02ld:%02ld", h, m, s);
-  else std::snprintf(buf, sizeof buf, "%02ld:%02ld", m, s);
+  // (a broken file can report any length; long is 32 bits on Windows, so the cast is bounded)
+  long long t = (long long)std::min(sec, 1e15);
+  long long h = t / 3600, m = (t / 60) % 60, s = t % 60;
+  char buf[48];
+  if (h > 0 || force_hours) std::snprintf(buf, sizeof buf, "%lld:%02lld:%02lld", h, m, s);
+  else std::snprintf(buf, sizeof buf, "%02lld:%02lld", m, s);
   return buf;
 }
 

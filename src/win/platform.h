@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include "../core/ui_scale.h"
+#include "../core/file_io.h"
 #include <ole2.h>
 #include <shellapi.h>
 
@@ -17,17 +18,24 @@ bool migrate_data_dir();  // the running Cue moves the old folder once (false: n
 // the attributes Windows already returns (no per-file look-up: a Downloads folder of thousands
 // of files lists in a few milliseconds).
 std::vector<std::wstring> folder_files(const std::wstring& dir, size_t max);
+// A file on an external drive (USB, FireWire, an SD card; a pen drive or an external hard disk):
+// slower to answer than the PC's own disks, and an external hard disk falls asleep when it is not
+// read for a while (it then takes seconds to wake). Asked of the drive's description once per drive
+// letter (the device, not the disk: never wakes it). False for the PC's own disks, the network, and
+// anything not on a drive letter.
+bool on_external_drive(const std::string& path);
 
-enum class DialogKind { Video, Subtitle };
+enum class DialogKind { Video, Subtitle, Audio };
 std::vector<std::string> open_file_dialog(HWND owner, DialogKind kind);
-std::vector<std::string> clipboard_files(HWND owner);
+// as_text: a path copied as text (one line), not yet known to be a file (the caller asks, off the window's thread)
+std::vector<std::string> clipboard_files(HWND owner, bool* as_text = nullptr);
 void show_in_folder(const std::wstring& file);  // Explorer opens its folder with the file selected (never blocks)
 // the remote's shared folders: pick one, name one the way Explorer does ("Vídeos"), and the
 // usual places (Videos, Downloads, Desktop) wherever this person keeps them
 bool remote_path_allowed(const std::string& root, const std::string& path);
 std::string pick_folder_dialog(HWND owner);
 std::string folder_display_name(const std::string& path);
-std::vector<std::string> default_media_folders();  // Videos, Downloads, Desktop ("" when unknown)
+std::vector<std::string> default_media_folders();  // Videos, Music, Downloads, Desktop ("" when unknown)
 bool register_open_with(std::string* err);  // HKCU only, never steals defaults
 void refresh_open_with();  // refresh stale name/path once; no writes when already current
 
@@ -35,6 +43,7 @@ void refresh_open_with();  // refresh stale name/path once; no writes when alrea
 // Choices: -1 small, 0 default, 2 medium (half step), 1 large.
 // ui_scale lives in core/ui_scale.h so all DPI/size combinations are testable.
 bool system_reduce_motion();
+bool system_window_animation();  // minimize/restore animated by Windows
 bool system_high_contrast();
 
 // OLE drop target for the home. Reports position while dragging so the eyes can follow.

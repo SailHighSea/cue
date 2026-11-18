@@ -36,6 +36,8 @@ class ThumbClient {
   uint32_t epoch() const { return epoch_; }
   void open(const std::string& utf8_path, int width, uint32_t session);
   void shot(uint32_t id, double t, int output_width = 0, bool precise = false);
+  // the nearest keyframe, decoded below normal priority (no one is waiting: the home's pictures)
+  void shot_background(uint32_t id, double t, int output_width = 0);
   void close_file();
   void shutdown();
   void kill();  // ends the helper at once, waits for nothing (the app is leaving)

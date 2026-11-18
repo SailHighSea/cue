@@ -2,6 +2,7 @@
 import sys
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 W, H, out, font, size, bg, pos = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5]), int(sys.argv[6]), float(sys.argv[7])
+k = float(sys.argv[8]) if len(sys.argv) > 8 else 1.0  # how much of the line shows (a panel dims it)
 img = Image.new("RGB", (W, H))
 d = ImageDraw.Draw(img)
 for y in range(H):
@@ -15,17 +16,18 @@ img = img.filter(ImageFilter.GaussianBlur(1))
 txt = "Você também viu aquela luz no céu?"
 px = size * H / 720
 f = ImageFont.truetype(font, int(px))
-d = ImageDraw.Draw(img, "RGBA")
+layer = Image.new("RGBA", img.size, (0, 0, 0, 0))  # the line on its own layer: its alpha holds
+d = ImageDraw.Draw(layer)
 tw = d.textlength(txt, font=f)
 bottom = pos / 100 * H
 asc, desc = f.getmetrics()
 pad = 6 * H / 720
 x = W / 2 - tw / 2; y = bottom - asc - desc
 if bg > 0:
-    d.rectangle([x - pad, y - pad, x + tw + pad, y + asc + desc + pad], fill=(0, 0, 0, int(255 * bg / 100)))
+    d.rectangle([x - pad, y - pad, x + tw + pad, y + asc + desc + pad], fill=(0, 0, 0, int(255 * bg / 100 * k)))
 else:
     for dx in (-2, 0, 2):
         for dy in (-2, 0, 2):
-            d.text((x + dx, y + dy), txt, font=f, fill=(0, 0, 0, 200))
-d.text((x, y), txt, font=f, fill=(255, 255, 255, 255))
-img.convert("RGBA").save(out)
+            d.text((x + dx, y + dy), txt, font=f, fill=(0, 0, 0, int(200 * k)))
+d.text((x, y), txt, font=f, fill=(255, 255, 255, int(255 * k)))
+Image.alpha_composite(img.convert("RGBA"), layer).save(out)

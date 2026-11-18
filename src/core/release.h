@@ -25,5 +25,9 @@ bool update_due(int64_t now, int64_t last_checked);
 // Reads a /releases/latest response. False when it is not a usable release
 // (draft, prerelease, no installer asset).
 bool parse_release(const std::string& json, ReleaseInfo& out);
+// The hosts an update is fetched from: GitHub's API and site, and its download hosts
+// (*.githubusercontent.com, where a release's files are redirected). A release, or a redirect,
+// that points anywhere else is not followed. Case-insensitive; no port, no user part.
+bool update_host_allowed(const std::string& host);
 // "1.2" for "1.2.0", "1.2.1" stays
 std::string short_version(const std::string& v);

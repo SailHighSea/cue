@@ -14,18 +14,26 @@ from PIL import Image, ImageDraw
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 RIM, FILL, INK = (78, 78, 78), (8, 8, 8), (255, 255, 255)
+# The dark-theme form of the Store package's icon (altform-unplated): the same tile with a
+# graphite rim of 5% of its width. Windows judges a monochrome icon's contrast with a dark
+# background; the hairline rim does not pass, so "Open with" put the tile on a system plate.
+# Tested side by side on Windows 11 (rims of 3-7%, grey 100-190): 5% graphite is the most
+# discreet that passes.
+DARK_RIM, DARK_RIM_WIDTH = (100, 100, 100), 0.05
 
 
-def tile(size, mark=0.58):
+def tile(size, mark=0.58, dark=False):
     ss = 8  # the rounded outline is supersampled; the mark is drawn on exact pixels
     big = size * ss
     im = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    inset = 0 if size <= 32 else size // 48
+    inset = 0 if size <= 32 or dark else size // 48
     radius = int(big * 0.22)
     o = inset * ss
     rim = ss if size <= 32 else max(ss, big // 64)  # 1 px at small sizes, a hairline on large ones
-    d.rounded_rectangle([o, o, big - 1 - o, big - 1 - o], radius, fill=RIM + (255,))
+    if dark:
+        rim = max(ss, int(big * DARK_RIM_WIDTH))
+    d.rounded_rectangle([o, o, big - 1 - o, big - 1 - o], radius, fill=(DARK_RIM if dark else RIM) + (255,))
     d.rounded_rectangle([o + rim, o + rim, big - 1 - o - rim, big - 1 - o - rim], max(1, radius - rim), fill=FILL + (255,))
     im = im.resize((size, size), Image.LANCZOS)
     # The play mark in the interface's proportion: each column is two cells shorter.
@@ -48,8 +56,8 @@ def tile(size, mark=0.58):
 NOTE = ["...###..", "...#.##.", "...#..##", "...#...#", "...#....", "...#....", ".###....", "####....", "####....", ".##....."]
 
 
-def music_icon(size):
-    im = tile(size, mark=0)
+def music_icon(size, dark=False):
+    im = tile(size, mark=0, dark=dark)
     rows, cols = len(NOTE), len(NOTE[0])
     unit = max(1, round(size * 0.58 / rows))
     x0, y0 = (size - cols * unit) // 2, (size - rows * unit) // 2

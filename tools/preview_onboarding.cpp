@@ -62,17 +62,19 @@ int main(int argc, char** argv) {
     return 0;
   }
   run(0.6); ob.render(c, now); save_canvas(c, out + "/ob-intro-early.png");
-  run(1.0); ob.render(c, now); save_canvas(c, out + "/ob-intro-burst.png");
-  run(2.0); ob.render(c, now); save_canvas(c, out + "/ob-intro.png");
-  ob.go(1, now); run(0.12); ob.render(c, now); save_canvas(c, out + "/ob-slide.png");
+  run(3.0); ob.render(c, now); save_canvas(c, out + "/ob-intro.png");
+  ob.go(1, now); run(0.18); ob.render(c, now); save_canvas(c, out + "/ob-eyes-close.png");
+  run(0.2); ob.render(c, now); save_canvas(c, out + "/ob-slide.png");
   run(1.2); ob.render(c, now); save_canvas(c, out + "/ob-ambient.png");
+  ob.light_inside = true; run(0.1); ob.render(c, now); save_canvas(c, out + "/ob-ambient-inside.png"); ob.light_inside = false;
   ob.set_ambient(false, now); run(1.2); ob.render(c, now); save_canvas(c, out + "/ob-ambient-off.png");
   ob.set_ambient(true, now);
   ob.go(2, now); run(1.2); ob.render(c, now); save_canvas(c, out + "/ob-size.png");
+  const char* names[4] = {"pequena", "media", "grande", "maior"};
+  for (int i = 0; i < 4; ++i) { ob.set_scale_choice(ui_size_choice(i), now); run(0.5); ob.render(c, now); save_canvas(c, out + "/ob-size-" + names[i] + ".png"); }
+  ob.set_scale_choice(ui_size_choice(1), now); run(0.5);
   ob.mouse_move(ob.w - 40 * s, ob.h - 20 * s, now); run(0.3); ob.render(c, now); save_canvas(c, out + "/ob-size-hover.png");
   ob.mouse_leave(now);
-  ob.go(3, now); run(0.25); ob.render(c, now); save_canvas(c, out + "/ob-next-in.png");
-  run(1.2); ob.render(c, now); save_canvas(c, out + "/ob-next.png");
-  run(0.9); ob.render(c, now); save_canvas(c, out + "/ob-next-2.png");
+  ob.finish(now, 0, 0, 2); run(0.1); ob.render(c, now); save_canvas(c, out + "/ob-finish.png");
   std::puts("ok");
 }

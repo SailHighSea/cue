@@ -1,7 +1,9 @@
 // Runs the remote's real server without the player, for testing it from a browser.
 //   x86_64-w64-mingw32-g++ -std=c++20 -O1 -municode -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00
-//     -DNOMINMAX tools/remote_harness.cpp src/win/remote_server.cpp src/win/platform.cpp src/core/*.cpp
-//     -o build/remote_harness.exe -static -lws2_32 -liphlpapi -lbcrypt -lole32 -lshell32 -luuid -lshcore -lcomdlg32 -ldwmapi -lgdi32
+//     -DNOMINMAX tools/remote_harness.cpp src/win/remote_server.cpp src/win/platform.cpp src/win/cover_image.cpp
+//     src/ui/atmosphere.cpp src/core/*.cpp -o build/remote_harness.exe -static -lws2_32 -liphlpapi -lbcrypt -lole32 -lshell32
+//     -luuid -lshcore -lcomdlg32 -ldwmapi -lgdi32 -lcrypt32 -lwindowscodecs
+//   (runs under Wine too: tests/remote_e2e_harness.cjs drives it from Chromium)
 //   remote_harness.exe <font.ttf> <shared folder> [language]
 // Prints every command it receives; pairing code 481234; a pretend episode plays.
 #include <windows.h>

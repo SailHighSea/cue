@@ -56,6 +56,7 @@ struct App {
   bool loaded_=true,first_frame_=true,audio_only_=false,fullscreen_=false;
   double first_frame_t_=-1,loaded_at_=0,open_started_=0,pending_ar_=0;
   struct {bool on=false;}geom_;
+  struct {bool on_=false;bool on()const{return on_;}}grow_cover_;  // (13s: the black cover while the window grows)
   bool window_settled()const{return !geom_.on;}
   void log(const std::string&){}
   void try_start_iris();

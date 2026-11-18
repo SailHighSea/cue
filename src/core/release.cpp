@@ -69,6 +69,19 @@ std::string short_version(const std::string& v) {
   return s;
 }
 
+bool update_host_allowed(const std::string& host) {
+  if (host.empty() || host.size() > 253) return false;
+  std::string h = lower(host);
+  for (char c : h)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.')) return false;
+  if (h == "github.com" || h == "api.github.com") return true;
+  // a download host: one or more labels in front of githubusercontent.com, never the suffix
+  // glued to another name ("evilgithubusercontent.com")
+  const std::string suffix = ".githubusercontent.com";
+  return h.size() > suffix.size() && h.compare(h.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+         h[0] != '.' && h.find("..") == std::string::npos;
+}
+
 bool parse_release(const std::string& json, ReleaseInfo& out) {
   JVal j;
   if (!json_parse(json, j) || j.t != JVal::Obj) return false;

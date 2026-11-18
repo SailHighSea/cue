@@ -156,3 +156,86 @@ Rgb ColorSmoother::rgb() const {
   auto u = [](double v) { return (uint8_t)std::lround(std::clamp(v, 0.0, 255.0)); };
   return {u(r), u(g), u(b)};
 }
+
+namespace {
+double srgb_to_linear(double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); }
+double linear_to_srgb(double v) { return v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1 / 2.4) - 0.055; }
+const double* decode_table() {  // the 256 sRGB codes in linear light, made once
+  static double t[256];
+  static bool made = false;
+  if (!made) { for (int i = 0; i < 256; ++i) t[i] = srgb_to_linear(i / 255.0); made = true; }
+  return t;
+}
+// linear light (0..1) to an sRGB code, looked up by its square root (fine near black, where the
+// codes are dense): within a twentieth of a code of the exact curve, without a pow per channel
+constexpr int kEnc = 4096;
+const uint8_t* encode_table() {
+  static uint8_t t[kEnc + 1];
+  static bool made = false;
+  if (!made) {
+    for (int i = 0; i <= kEnc; ++i) { const double u = (double)i / kEnc; t[i] = (uint8_t)std::lround(std::clamp(linear_to_srgb(u * u), 0.0, 1.0) * 255); }
+    made = true;
+  }
+  return t;
+}
+inline uint8_t encode8(double v) { return encode_table()[(int)std::lround(std::sqrt(std::clamp(v, 0.0, 1.0)) * kEnc)]; }
+}  // namespace
+
+Lab to_oklab(Rgb c) {
+  const double* d = decode_table();
+  const double r = d[c.r], g = d[c.g], b = d[c.b];
+  const double l = std::cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const double m = std::cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const double s = std::cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return {0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s, 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+          0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s};
+}
+
+Rgb from_oklab(const Lab& c) {
+  const double l = c.L + 0.3963377774 * c.a + 0.2158037573 * c.b, m = c.L - 0.1055613458 * c.a - 0.0638541728 * c.b,
+               s = c.L - 0.0894841775 * c.a - 1.2914855480 * c.b;
+  const double l3 = l * l * l, m3 = m * m * m, s3 = s * s * s;
+  const double r = 4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3;
+  const double g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
+  const double b = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
+  return {encode8(r), encode8(g), encode8(b)};
+}
+
+bool LightBreath::step(Rgb t, double tk, double dt, double stage_tau) {
+  if (!primed || t.r != target_rgb.r || t.g != target_rgb.g || t.b != target_rgb.b) { target_rgb = t; target_lab = to_oklab(t); }
+  const double want[4] = {target_lab.L, target_lab.a, target_lab.b, tk};
+  if (!primed) {
+    for (auto& st : s) for (int c = 0; c < 4; ++c) st[c] = want[c];
+    tau = tau_to = stage_tau; primed = true; resting = true; out = t; k = tk;
+    return true;
+  }
+  tau_to = stage_tau;
+  // (a new pace is eased into, ~0.25 s: changing it at once would change the speed at once)
+  // (the 26 zones step with the same dt and pace: the exponentials are worked out once per tick)
+  static double c_dt = -1, c_tau = -1, c_ease = 0, c_a = 0;
+  if (dt != c_dt) { c_dt = dt; c_ease = 1 - std::exp(-dt / 0.25); c_tau = -1; }
+  if (tau != tau_to) tau += (tau_to - tau) * c_ease;
+  if (std::fabs(tau - tau_to) < 1e-4) tau = tau_to;
+  if (tau != c_tau) { c_tau = tau; c_a = 1 - std::exp(-dt / std::max(1e-3, tau)); }
+  const double a = c_a;
+  double far = 0;
+  for (int c = 0; c < 4; ++c) {
+    double prev = want[c];
+    for (int i = 0; i < kStages; ++i) { s[i][c] += (prev - s[i][c]) * a; prev = s[i][c]; }
+    for (int i = 0; i < kStages; ++i) far = std::max(far, std::fabs(want[c] - s[i][c]) * (c == 3 ? 0.25 : 1.0));
+  }
+  // landed (under a tenth of what an 8-bit step is): it rests exactly on the target
+  if (far < 0.0004) {
+    for (auto& st : s) for (int c = 0; c < 4; ++c) st[c] = want[c];
+    const bool was = resting;
+    resting = true;
+    const bool changed = out.r != t.r || out.g != t.g || out.b != t.b || std::fabs(k - tk) > 1e-9;
+    out = t; k = tk;
+    return changed || !was;
+  }
+  resting = false;
+  const double* o = s[kStages - 1];
+  out = from_oklab({o[0], o[1], o[2]});
+  k = std::clamp(o[3], 0.0, 1.0);
+  return true;
+}

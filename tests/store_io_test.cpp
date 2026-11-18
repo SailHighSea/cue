@@ -16,6 +16,14 @@ int main() {
   assert(!points.set_position("clip.mp4",20,100));
   assert(points.set_position("clip.mp4",20,101));
   assert(!points.set_position("missing.mp4",20,100));
+  {
+    // what the home says beyond a name: a song's artist, a book's chapters (and old files without them)
+    auto p2=dir/"home.json";Store a;auto& it=a.touch("C:\\b\\Hobbit.m4b",20000,5);it.artist="J. R. R. Tolkien";it.chapters=19;it.chapter=3;
+    a.touch("C:\\v\\film.mkv",100,6);assert(a.save(p2));
+    Store b;assert(b.load(p2));auto* r=b.find("C:\\b\\Hobbit.m4b");assert(r&&r->artist=="J. R. R. Tolkien"&&r->chapters==19&&r->chapter==3);
+    auto* f=b.find("C:\\v\\film.mkv");assert(f&&f->artist.empty()&&f->chapters==0&&f->chapter==-1);
+    assert(bytes(p2).find("chaps")!=std::string::npos);
+  }
   Store store;assert(store.save(path));auto original=bytes(path);
   assert(store.save(path) && bytes(backup)==original); // seed the recovery copy once
   auto stamp=std::filesystem::file_time_type::clock::now()-std::chrono::hours(1);

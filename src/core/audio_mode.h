@@ -55,7 +55,10 @@ struct MusicScene {
 //   Cover: the cover and its wings alone (small windows)
 //   Card:  a song's mini player: the cover on the left, its words and the bar beside it, the
 //          wings stepped out (the app frames it from the card's own layout)
-enum class MusicFrame { Scene, Tall, Cover, Card, Centre };
+// (and the rascunho's small windows, 14/11: Cover is now the Compacto, the cover large with the
+// playback under it; Micro: the cover is the window; Strip: a thin strip, a thumbnail and the words.
+// All three are drawn as the card is: see PlayView::cmode_)
+enum class MusicFrame { Scene, Tall, Cover, Card, Centre, Micro, Strip };
 // the close compositions: the cover, its words and a compact bar stand together as one group
 inline bool music_frame_stacked(MusicFrame f) { return f == MusicFrame::Tall || f == MusicFrame::Cover; }
 // screen = (ox, oy) + scene * f
@@ -77,8 +80,25 @@ constexpr double kMusicSplitRatio = 2.2;
 inline double scene_words_x(const MusicScene& S, const MusicView& v) { return v.split() ? v.wx : v.ox + S.text_x * v.f; }
 inline double scene_words_w(const MusicScene& S, const MusicView& v) { return v.split() ? v.ww : S.text_w * v.f; }
 // w, h: the window; s: the interface's pixel scale (sizes below are in its art pixels)
-inline MusicFrame music_frame_for(int w, int h, double s) {
+// Micro and the strip (the rascunho's smallest windows): on
+constexpr bool kMusicSmallFrames = true;
+// the smallest windows a song is given (px at 100%): Micro, a square of 220 (smaller, its controls
+// were too small to use: the Biel's review of 15/11); the strip, 96 high, only from 460 wide (room
+// for the thumbnail, a title and the playback)
+constexpr int kMusicMinW = 220, kMusicMinH = 96, kMusicMicroMin = 220, kMusicStripMinW = 460;
+// prev: the frame shown now (its limits keep 16 px of slack, so a drag at the line does not flicker)
+// dip: the screen's pixels per pixel at 100% (dpi / 96); the small windows' limits are in those
+// (the interface's own pixel grows as a window gets small, so its art px would move the lines)
+inline MusicFrame music_frame_for(int w, int h, double s, MusicFrame prev = MusicFrame::Card, double dip = 0) {
   double aw = w / std::max(0.5, s), ah = h / std::max(0.5, s);
+  // the rascunho's small windows: a thin strip (Micro in a strip), a small one (Micro)
+  if (kMusicSmallFrames && dip > 0) {
+    const double k = 16, dw = w / dip, dh = h / dip;
+    const bool strip = prev == MusicFrame::Strip ? (dh < 120 + k && dw >= 3 * dh - k) : (dh < 120 && dw >= 3 * dh);
+    if (strip) return MusicFrame::Strip;
+    const bool micro = prev == MusicFrame::Micro ? (dw < 300 + k && dh < 300 + k) : (dw < 300 && dh < 300);
+    if (micro) return MusicFrame::Micro;
+  }
   // a wide, short window (a strip on the side of the screen): the words keep their place beside
   // the cover, half and half (see music_view), instead of the cover alone between dark sides
   if (aw >= ah * kMusicSplitRatio && aw >= 560 && ah >= 150) return MusicFrame::Scene;

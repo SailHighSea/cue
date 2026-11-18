@@ -67,6 +67,11 @@ int main() {
   CHECK(b.style_for("C:\\Vídeos\\Pôr do sol.mkv").font == 2 && b.eggs_seen == 6);
   // resume skips the very end
   b.set_position("C:\\Vídeos\\Pôr do sol.mkv", 2990, 3000); CHECK(b.resume_point("C:\\Vídeos\\Pôr do sol.mkv") < 0);
+  // under 10 minutes nothing resumes (the place is kept, for "watched"); 10 minutes or more does
+  b.touch("C:\\clip.mp4", 599, 6); b.set_position("C:\\clip.mp4", 300, 599); CHECK(b.resume_point("C:\\clip.mp4") < 0);
+  CHECK(b.find("C:\\clip.mp4") && b.find("C:\\clip.mp4")->pos == 300);
+  b.touch("C:\\ep.mkv", 600, 7); b.set_position("C:\\ep.mkv", 300, 600); CHECK(std::abs(b.resume_point("C:\\ep.mkv") - 300) < 0.01);
+  b.touch("C:\\live.ts", 0, 8); b.set_position("C:\\live.ts", 300, 0); CHECK(std::abs(b.resume_point("C:\\live.ts") - 300) < 0.01);  // length unknown: as before
   // labels
   std::vector<Track> tr = {{1, "audio", "por", "", "aac"}, {2, "audio", "eng", "Commentary", "aac"}, {3, "audio", "eng", "", "ac3"}, {4, "audio", "", "", "aac"}};
   CHECK(track_label(tr[0], tr) == "Português");

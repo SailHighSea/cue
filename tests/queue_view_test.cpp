@@ -103,5 +103,12 @@ int main() {
       assert(r.r()<=c.x||r.y>=c.b());
     }
   assert(under>60);
+  // A short window at 100% (a 300 px mini player; 320 x 180 with the small interface) draws the list
+  // under 1x: with one or two entries its "add" row was a dotted box stepping 0 px, and Cue froze.
+  for(size_t n:{0,1,2,3})for(auto size:{std::pair{320,180},std::pair{300,169},std::pair{400,190}}) {
+    PlayView p;p.in.dur=100;p.in.queue_active=n>0;p.in.queue.assign(entries.begin(),entries.begin()+n);p.in.queue_revision=1;
+    p.resize(size.first,size.second,1);p.reset(1);p.key("q",false,false,1);
+    for(int k=0;k<80;++k)p.tick(1+k/60.,1./60);  // (returns: it no longer loops forever)
+  }
   puts("Queue sheet: complete 512-item list, drag/drop, cancellation, scroll, keyboard, image bounds, 96 adaptive layouts and panels anchored to their button and clear of the controls passed");
 }

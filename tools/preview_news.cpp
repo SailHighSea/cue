@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
     Canvas c;
     double now = 100;
     v.open(now);
-    for (double t = 0; t < 0.9; t += 1 / 60.0) { now += 1 / 60.0; v.tick(now, 1 / 60.0); }
+    for (double t = 0; t < 2.2; t += 1 / 60.0) { now += 1 / 60.0; v.tick(now, 1 / 60.0); }
     v.pointer_move(v.w / 2 + 60, v.h - 40, now);
     for (double t = 0; t < 0.3; t += 1 / 60.0) { now += 1 / 60.0; v.tick(now, 1 / 60.0); }
     v.render(c, now);

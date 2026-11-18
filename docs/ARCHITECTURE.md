@@ -42,7 +42,7 @@ Fullscreen uses shader parameters `cue_on`, `cue_dark`, `cue_px`, and `cue_gray`
 
 `Cue.exe --thumb-host` runs a separate low-priority, CPU-only engine for timeline previews and scene-color samples. Two pipes carry one active decode and a replaceable latest destination; generation and request IDs reject stale responses. The helper reads commands independently of decoding and checks for superseding work every 10 ms while waiting for engine events. A job object ties its lifetime to Cue. Failure removes previews without stopping playback.
 
-Color sampling starts 1.5 seconds after the first frame. The preview helper warms up after the first frame/reveal and a 250 ms playback delay; an explicit hover can start as soon as the reveal settles. Navigation requests use a stable one-second interval and a fast keyframe seek, with the actual returned time stored alongside each image. A new hover dispatches immediately when navigation is idle; subsequent destinations are coalesced to at most 30 Hz. Active navigation finishes before the latest destination is dispatched, preventing seek starvation; colour work is preemptible. Only a result matching the current destination is displayed. File changes and close still cancel old work. The 12 MiB / 256-entry RAM cache remains bounded, without speculative lookahead or a full-timeline scan. Each hover epoch clears its display and rejects stale replies; a cache miss within a continuous hover retains the current picture and geometry until replacement, with its own timestamp. New hovers clear pixels while keeping the per-file card aspect. Known video geometry reserves the first card; the view retains small source pixels and scales into the tooltip canvas on content changes. Previews fit the mini player, remain below its window buttons and clear of its dock; music remains time-only. The helper returns below normal CPU priority after each navigation operation. Main-player clicks remain precise, and colour probes retain exact seeking. Timing fields in the helper protocol support the separate Windows CPU/GPU diagnostic. See [thumbnail policy](THUMBNAILS-2026-11-08.md).
+Color sampling starts 1.5 seconds after the first frame. The preview helper warms up after the first frame/reveal and a 250 ms playback delay; an explicit hover can start as soon as the reveal settles. Navigation requests use a stable one-second interval and a fast keyframe seek, with the actual returned time stored alongside each image. A new hover dispatches immediately when navigation is idle; subsequent destinations are coalesced to at most 30 Hz. Active navigation finishes before the latest destination is dispatched, preventing seek starvation; colour work is preemptible. Only a result matching the current destination is displayed. The helper remembers which keyframe each navigation request landed on and keeps the last 64 keyframe pictures: a request it can prove lands on one of them (from earlier answers, or from the file's Cues/stss index once the engine has confirmed it twice) is answered without a seek (`core/keyframe_index.h`). An HEVC file is decoded with slice threading (`on_preloaded` hook). File changes and close still cancel old work. The 12 MiB / 256-entry RAM cache remains bounded, without speculative lookahead or a full-timeline scan. Each hover epoch clears its display and rejects stale replies; a cache miss within a continuous hover retains the current picture and geometry until replacement, with its own timestamp. New hovers clear pixels while keeping the per-file card aspect. Known video geometry reserves the first card; the view retains small source pixels and scales into the tooltip canvas on content changes. Previews fit the mini player, remain below its window buttons and clear of its dock; music remains time-only. The helper returns below normal CPU priority after each navigation operation. Main-player clicks remain precise, and colour probes retain exact seeking. Timing fields in the helper protocol support the separate Windows CPU/GPU diagnostic. See [thumbnail policy](THUMBNAILS-2026-11-08.md).
 
 `atmosphere.cpp` chooses representative scene colors and smooths changes. Ambient lighting uses click-through layered windows below the player, cached geometry and color ramps, and approximately 30 Hz updates. Dragging reuses existing images and defers sampling/rebuilds until the gesture ends. The halo's shape is built for the whole window once per size; its layered surfaces hold only the part on the virtual screen. When a move reveals a part the surfaces lack, they are cut again from the shape at once (the whole strips while the window is held), and trimmed back a moment after it settles.
 
@@ -340,7 +340,26 @@ controls of a comparable 16:9 window instead of dropping a step.
 The home's Recent list is built by `core/recents_view.h`: recents (newest first) are
 grouped by `remote::series_id`, so a show is one entry that opens its latest episode and
 counts the others; `series_title` and `episode_label` give the readable name and
-"S01E03". Rows are two lines (30 art px pitch); the window shows as many as fit.
+"S01E03". Rows are two lines (38 art px pitch); the window shows as many as fit.
+`recent_kind` tells a film, an episode, a song, long audio (`resumes_audio`: 20 min or more)
+and a book (`.m4b`, or long audio in 3+ chapters) apart; `ago` says when in calendar days.
+Each row has a picture (`HomeRow::thumb`, `ui/thumb_art`): 48 x 27 art px, 32 x 18 in a
+smaller window, none below 400 art px of composition. `win/recent_thumbs` reads them on one
+low-priority worker (a film: `thumbs\<fnv1a-64 of the normalized path>.jpg`, 160 x 90 at most,
+stale when older than the entry's `last`; audio: `cover_image`, else its saved picture) and
+answers by message. Every picture Cue makes comes from the timeline's own helper, `thumbs_`
+(`next_home_shot`), with sessions of their own (`kHomeShotSessions`, routed in `on_thumb`):
+`shot_background` (keyframe seek, below normal priority), one file at a time, only on the home.
+The film just left goes first, at once (`go_home`); the others 1 s after the home came in. Nothing
+new starts while the pointer is on an entry (at most 3 s). A file opening ends a shot in flight
+(`stop_home_shots` ends the helper; an idle one is kept for the player); a helper started for the home alone goes when done.
+`home_shot_reachable` keeps network, disc and cloud-only files (OneDrive placeholders) out, except
+the film just left. `film_left` marks a film's
+frame out of date when it is closed or replaced; nothing is taken from the playing engine.
+The home scales each picture once per size into a cached tile;
+stand-ins are drawn on the art grid from a hash of the path. Audio is square (`thumb_art::square`);
+a song's record (`make_disc`) is cached per size, turn and light. `HomeView::clear_animated`
+snapshots the rows as drawn, then the cleared list lets them go in a stagger (`ghosts_`).
 When a queue starts from the playing file, `MediaQueue::without_first` drops that
 file once from the added batch (ASCII case-insensitive, either slash), so a folder
 containing it does not list it twice. The phone fetches an authenticated `/queue` snapshot only

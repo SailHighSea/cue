@@ -70,7 +70,8 @@ short length would keep it over the face most of the time. A song with a cover w
 as the face: the page fetches `/cover` (72 px, shown at 2x, pixel for pixel) when the
 state's `cover` number changes, takes its average colour (lifted so a dark cover still
 glows) for the glow, and dims it while paused; without a cover the eyes stay. With music
-in a queue, the side buttons are previous/next song (the up-next icons) and the long
+in a queue, the side buttons are previous/next song (the up-next icons; the page sends
+`prev` / `next` and the PC picks the file, as P and N do) and the long
 press "what?" is off: a song's neighbours matter more than fifteen seconds of it. Under
 the bar, the right-hand time is what is left (−12:34) or the whole length; a tap switches,
 and the choice is kept per kind in the browser (films start with what is left, songs with
@@ -92,7 +93,8 @@ fades out (200 ms) on close.
 ### Wheel modes
 
 The center button cycles the wheel's modes: time, volume and, while an explicit
-queue exists, **up next**. Two or three 4 px dots under the center icon show the
+queue exists and a film plays, **up next** (music has two modes: its side buttons step songs
+already). In volume mode the side buttons are − and +, 5 a press (0 to 125, like the ring). Two or three 4 px dots under the center icon show the
 modes and light the current one. In up next mode the side buttons become previous
 and next file, and the ring walks the queue in 26° detents. The scrub card shows
 `position / total`, the name and, after a 140 ms rest, the item's preview; lifting

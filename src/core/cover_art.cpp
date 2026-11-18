@@ -211,12 +211,10 @@ std::string base64(std::string_view s) {
   }
   return o;
 }
-void vorbis_comments(std::string_view c, Best& best) {
-  size_t p = 0;
-  if (c.substr(0, 8) == "OpusTags") p = 8;
-  else if (c.size() >= 7 && c[0] == 3 && c.substr(1, 6) == "vorbis") p = 7;
-  else return;
-  if (c.size() - p < 4) return;
+// a Vorbis comment block's body (vendor, then the list); Vorbis and Opus put a word before it,
+// FLAC (in a FLAC file or in Ogg) does not
+void comment_body(std::string_view c, size_t p, Best& best) {
+  if (c.size() < p || c.size() - p < 4) return;
   uint32_t vl = le32(c, p); p += 4; if (vl > c.size() - p) return; p += vl;
   if (c.size() - p < 4) return;
   uint32_t n = le32(c, p); p += 4;
@@ -233,15 +231,25 @@ void vorbis_comments(std::string_view c, Best& best) {
     else if (key == "COVERART") best.offer(base64(kv.substr(eq + 1)), -1);
   }
 }
+void vorbis_comments(std::string_view c, Best& best) {
+  if (c.substr(0, 8) == "OpusTags") comment_body(c, 8, best);
+  else if (c.size() >= 7 && c[0] == 3 && c.substr(1, 6) == "vorbis") comment_body(c, 7, best);
+}
+// An Ogg file: its pages, the packets of one logical stream. The audio one (Vorbis, Opus or FLAC):
+// a file can begin with another (a Skeleton, or a film's Theora: then there is no song's cover).
+// Vorbis and Opus keep their tags in their second packet; FLAC in Ogg sends its metadata blocks
+// as packets after its first (the comment block, a PICTURE block).
 void ogg(Src& src, Best& best) {
+  enum Codec { None, Vorbis, Opus, Flac };
   uint64_t p = 0;
   uint32_t serial = 0;
-  bool have_serial = false;
+  Codec codec = None;
   int packet = 0;
   std::string cur;
-  for (int pages = 0; pages < 4096; ++pages) {
+  for (int pages = 0; pages < 4096 && !best.done(); ++pages) {
     std::string h;
     if (!src.read(p, 27, h) || h.compare(0, 4, "OggS") != 0) return;
+    const bool bos = (uint8_t)h[5] & 0x02;
     uint32_t s = le32(h, 14);
     int nseg = (uint8_t)h[26];
     std::string segs;
@@ -249,21 +257,42 @@ void ogg(Src& src, Best& best) {
     uint64_t body = p + 27 + (uint64_t)nseg;
     uint64_t total = 0;
     for (char x : segs) total += (uint8_t)x;
-    if (!have_serial) { serial = s; have_serial = true; }
+    if (codec == None) {
+      // the streams begin together, each with a page of its own: the first audio one is the song
+      // (a page not marked as a beginning is looked at too, among the first few: lenient writers)
+      if (!bos && pages >= 16) return;
+      std::string head;
+      if (total >= 5 && src.read(body, (size_t)std::min<uint64_t>(total, 16), head)) {
+        if (head.size() >= 7 && head[0] == 1 && head.compare(1, 6, "vorbis") == 0) codec = Vorbis;
+        else if (head.size() >= 8 && head.compare(0, 8, "OpusHead") == 0) codec = Opus;
+        else if (head.size() >= 5 && (uint8_t)head[0] == 0x7f && head.compare(1, 4, "FLAC") == 0) codec = Flac;
+      }
+      if (codec != None) { serial = s; packet = 1; }  // (its first packet is this page's)
+      p = body + total;
+      continue;
+    }
     if (s == serial) {
       uint64_t q = body;
       for (int i = 0; i < nseg; ++i) {
         size_t len = (uint8_t)segs[(size_t)i];
-        if (packet == 1) {
-          std::string piece;
-          if (!src.read(q, len, piece)) return;
-          cur += piece;
-          if (cur.size() > kMaxCoverBytes) return;
-        }
+        std::string piece;
+        if (!src.read(q, len, piece)) return;
+        cur += piece;
+        if (cur.size() > kMaxCoverBytes) return;
         q += len;
         if (len < 255) {                                 // a packet ends here
-          if (packet == 1) { vorbis_comments(cur, best); return; }
-          ++packet;
+          if (codec != Flac) { vorbis_comments(cur, best); return; }
+          // FLAC: a metadata block (type, last, 24-bit length): the comments or a picture
+          if (cur.size() < 4) return;
+          const int type = (uint8_t)cur[0] & 0x7f;
+          const bool last = (uint8_t)cur[0] & 0x80;
+          const uint32_t blen = be24(cur, 1);
+          if (blen > cur.size() - 4) return;
+          std::string_view block = std::string_view(cur).substr(4, blen);
+          if (type == 4) comment_body(block, 0, best);
+          else if (type == 6) flac_picture(block, best);
+          if (last || best.done() || ++packet > 64) return;
+          cur.clear();
         }
       }
     }

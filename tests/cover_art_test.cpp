@@ -1,5 +1,5 @@
 // Covers found without the engine: ID3v2 (2.2, 2.3, 2.4 with unsynchronisation), FLAC,
-// Ogg Opus (a comment packet across pages), MP4 (moov after mdat), and pictures beside a song.
+// Ogg Opus (a comment packet across pages), Ogg with a Skeleton, a film's Theora or FLAC, MP4 (moov after mdat), and pictures beside a song.
 #include "../src/core/image_trim.h"
 #include "../src/core/cover_art.h"
 #include <cassert>
@@ -103,6 +103,55 @@ int main() {
     int seq = 0;
     std::string file = pages(77, seq, head) + pages(77, seq, tags) + pages(77, seq, std::string(100, 'a'));
     assert(embedded_in(file) == big);
+  }
+  // Ogg the way files really are: every stream's first page marked as its beginning, a
+  // Skeleton or a film's Theora before the audio (the audio one is the song); Vorbis with its
+  // picture; FLAC in Ogg, whose tags and picture are metadata blocks sent as packets
+  {
+    auto page = [](uint32_t serial, int& seq, bool bos, const std::string& packet) {
+      std::string out; size_t at = 0; bool first = true;
+      while (true) {
+        std::string segs, body;
+        while (segs.size() < 255) {
+          size_t n = std::min<size_t>(255, packet.size() - at);
+          segs += (char)n; body += packet.substr(at, n); at += n;
+          if (n < 255) break;
+        }
+        bool done = (uint8_t)segs.back() < 255;
+        char type = first ? (bos ? '\x02' : '\0') : '\x01';
+        out += "OggS" + std::string(1, '\0') + std::string(1, type) + std::string(8, '\0') + le32(serial) + le32((uint32_t)seq++) + le32(0) + std::string(1, (char)segs.size()) + segs + body;
+        first = false;
+        if (done) break;
+      }
+      return out;
+    };
+    const std::string img = jpeg('V', 3000);
+    const std::string mbp = "METADATA_BLOCK_PICTURE=" + b64(flac_pic(3, img));
+    const std::string list = le32(4) + "cue!" + le32(2) + le32(9) + "TITLE=abc" + le32((uint32_t)mbp.size()) + mbp;
+    const std::string vorbis_id = std::string("\x01vorbis", 7) + std::string(23, '\x02');
+    const std::string vorbis_tags = std::string("\x03vorbis", 7) + list + std::string("\x01", 1);
+    int seq = 0;
+    // Skeleton, Theora and Vorbis begin together; Theora's comments come first
+    std::string film = page(1, seq, true, std::string("fishead\0", 8) + std::string(56, '\0')) +
+                       page(2, seq, true, std::string("\x80theora", 7) + std::string(35, '\x03')) +
+                       page(3, seq, true, vorbis_id) +
+                       page(2, seq, false, std::string("\x81theora", 7) + le32(0) + le32(0)) +
+                       page(3, seq, false, vorbis_tags) + page(3, seq, false, std::string(200, 'a'));
+    assert(embedded_in(film) == img);
+    // a film alone (Theora with no audio stream): no cover, and nothing read past its beginning
+    std::string silent = page(2, seq, true, std::string("\x80theora", 7) + std::string(35, '\x03')) +
+                         page(2, seq, false, std::string("\x81theora", 7) + "METADATA_BLOCK_PICTURE=" + b64(flac_pic(3, img)));
+    assert(embedded_in(silent).empty());
+    // FLAC in Ogg: the mapping's first packet, then STREAMINFO-less metadata blocks as packets
+    const std::string flac_head = std::string("\x7f" "FLAC\x01\x00\x00\x02", 9) + "fLaC" + std::string("\x00", 1) + be24(34) + std::string(34, '\x11');
+    const std::string comment_block = std::string("\x04", 1) + be24((uint32_t)list.size()) + list;
+    const std::string picture = flac_pic(3, front);
+    const std::string picture_block = std::string("\x86", 1) + be24((uint32_t)picture.size()) + picture;
+    std::string oga = page(9, seq, true, flac_head) + page(9, seq, false, std::string("\x04", 1) + be24(8) + le32(0) + le32(0)) +
+                      page(9, seq, false, picture_block) + page(9, seq, false, std::string(300, 'f'));
+    assert(embedded_in(oga) == front);
+    std::string oga_tags = page(9, seq, true, flac_head) + page(9, seq, false, std::string("\x84", 1) + comment_block.substr(1)) + page(9, seq, false, std::string(300, 'f'));
+    assert(embedded_in(oga_tags) == img);
   }
   // MP4: ftyp, mdat, then moov/udta/meta/ilst/covr/data
   {

@@ -5,7 +5,10 @@
 #include <shobjidl.h>
 
 #include <cmath>
+#include <mutex>
+#include <winioctl.h>
 
+#include "../core/build_identity.h"
 #include "../core/i18n.h"
 #include "../core/remote_proto.h"
 
@@ -53,14 +56,24 @@ std::wstring data_dir() {
   const std::wstring root = roaming_dir();
   const std::wstring now = root + L"\\tinypeep\\Cue", was = root + L"\\tinyoffice\\Cue", older = root + L"\\tinyoffice\\Player";
   if (dir_exists(now)) return now;
+#if CUE_STORE_BUILD
+  // The Store edition never used the old names: only tinypeep\Cue. (Windows keeps a packaged
+  // app's %APPDATA% writes in the package's own per-user folder, removed with the app.)
+  (void)was; (void)older;
+  CreateDirectoryW((root + L"\\tinypeep").c_str(), nullptr);
+  CreateDirectoryW(now.c_str(), nullptr);
+  return now;
+#else
   if (dir_exists(was)) return was;
   if (dir_exists(older)) return older;
   CreateDirectoryW((root + L"\\tinypeep").c_str(), nullptr);
   CreateDirectoryW(now.c_str(), nullptr);
   return now;
+#endif
 }
 
 bool migrate_data_dir() {
+  if (CUE_STORE_BUILD) return true;  // nothing of the GitHub edition's is moved from inside the package
   const std::wstring root = roaming_dir();
   const std::wstring now = root + L"\\tinypeep\\Cue", was = root + L"\\tinyoffice\\Cue", older = root + L"\\tinyoffice\\Player";
   if (dir_exists(now)) return true;
@@ -84,22 +97,41 @@ std::vector<std::string> open_file_dialog(HWND owner, DialogKind kind) {
   const std::wstring media = widen(tr(str::win_filter_media)), audio = widen(tr(str::win_filter_audio)),
                      all = widen(tr(str::win_filter_all)), subtitles = widen(tr(str::win_filter_subtitles));
   COMDLG_FILTERSPEC video[] = {
-      {media.c_str(), L"*.mkv;*.mp4;*.m4v;*.mov;*.avi;*.webm;*.wmv;*.flv;*.ts;*.m2ts;*.mts;*.mpg;*.mpeg;*.ogv;*.3gp;*.vob;*.divx;*.dv;*.dif;*.ogg;*.oga;*.opus;*.mp3;*.m4a;*.aac;*.wav;*.flac;*.aif;*.aiff;*.wma;*.mka"},
-      {audio.c_str(), L"*.mp4;*.ogg;*.oga;*.opus;*.mp3;*.m4a;*.aac;*.wav;*.flac;*.aif;*.aiff;*.wma;*.mka"},
+      {media.c_str(), L"*.mkv;*.mp4;*.m4v;*.mov;*.avi;*.webm;*.wmv;*.flv;*.ts;*.m2ts;*.mts;*.mpg;*.mpeg;*.ogv;*.3gp;*.vob;*.divx;*.dv;*.dif;*.ogg;*.oga;*.opus;*.mp3;*.m4a;*.m4b;*.aac;*.wav;*.flac;*.aif;*.aiff;*.wma;*.mka"},
+      {audio.c_str(), L"*.mp4;*.ogg;*.oga;*.opus;*.mp3;*.m4a;*.m4b;*.aac;*.wav;*.flac;*.aif;*.aiff;*.wma;*.mka"},
       {all.c_str(), L"*.*"}};
   COMDLG_FILTERSPEC subs[] = {{subtitles.c_str(), L"*.srt;*.vtt;*.ass;*.ssa;*.sub;*.sup;*.idx"}, {all.c_str(), L"*.*"}};
+  // a film's own audio file (a dub, a commentary): every container the engine reads sound from
+  const std::wstring tracks = widen(tr(str::win_filter_audio_tracks));
+  COMDLG_FILTERSPEC sound[] = {
+      {tracks.c_str(), L"*.mka;*.mp3;*.m4a;*.aac;*.ac3;*.eac3;*.ec3;*.dts;*.thd;*.truehd;*.flac;*.opus;*.ogg;*.oga;*.wav;*.w64;*.wma;*.aif;*.aiff;*.mp2;*.mpa;*.mp4;*.mkv;*.webm"},
+      {all.c_str(), L"*.*"}};
   if (kind == DialogKind::Video) dlg->SetFileTypes(3, video);
+  else if (kind == DialogKind::Audio) dlg->SetFileTypes(2, sound);
   else dlg->SetFileTypes(2, subs);
-  dlg->SetTitle(widen(tr(kind == DialogKind::Video ? str::win_open_title : str::win_subtitle_title)).c_str());
+  dlg->SetTitle(widen(tr(kind == DialogKind::Video ? str::win_open_title : kind == DialogKind::Audio ? str::win_audio_title : str::win_subtitle_title)).c_str());
+  // films and songs: several at once (Ctrl and Shift, as in Explorer: 15/11); they go to the list
+  // in the order Explorer gives them. A dub and subtitles stay one at a time
+  if (kind == DialogKind::Video) {
+    FILEOPENDIALOGOPTIONS o = 0;
+    if (SUCCEEDED(dlg->GetOptions(&o))) dlg->SetOptions(o | FOS_ALLOWMULTISELECT);
+  }
   if (SUCCEEDED(dlg->Show(owner))) {
-    IShellItem* item = nullptr;
-    if (SUCCEEDED(dlg->GetResult(&item))) {
-      PWSTR path = nullptr;
-      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-        out.push_back(narrow(path));
-        CoTaskMemFree(path);
+    IShellItemArray* items = nullptr;
+    if (SUCCEEDED(dlg->GetResults(&items)) && items) {
+      DWORD n = 0;
+      items->GetCount(&n);
+      for (DWORD i = 0; i < n; ++i) {
+        IShellItem* item = nullptr;
+        if (FAILED(items->GetItemAt(i, &item)) || !item) continue;
+        PWSTR path = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+          out.push_back(narrow(path));
+          CoTaskMemFree(path);
+        }
+        item->Release();
       }
-      item->Release();
+      items->Release();
     }
   }
   dlg->Release();
@@ -151,7 +183,7 @@ std::string folder_display_name(const std::string& path) {
 
 std::vector<std::string> default_media_folders() {
   std::vector<std::string> out;
-  for (const KNOWNFOLDERID* id : {&FOLDERID_Videos, &FOLDERID_Downloads, &FOLDERID_Desktop}) {
+  for (const KNOWNFOLDERID* id : {&FOLDERID_Videos, &FOLDERID_Music, &FOLDERID_Downloads, &FOLDERID_Desktop}) {
     PWSTR p = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(*id, KF_FLAG_DEFAULT, nullptr, &p)) && p) out.push_back(narrow(p));
     else out.push_back("");
@@ -195,8 +227,9 @@ std::vector<std::string> files_from_hdrop(HDROP drop) {
   return out;
 }
 
-std::vector<std::string> clipboard_files(HWND owner) {
+std::vector<std::string> clipboard_files(HWND owner, bool* as_text) {
   std::vector<std::string> out;
+  if (as_text) *as_text = false;
   if (!OpenClipboard(owner)) return out;
   if (HANDLE h = GetClipboardData(CF_HDROP)) {
     out = files_from_hdrop((HDROP)h);
@@ -207,15 +240,19 @@ std::vector<std::string> clipboard_files(HWND owner) {
       GlobalUnlock(t);
       while (!w.empty() && (w.back() == L'\n' || w.back() == L'\r' || w.back() == L' ')) w.pop_back();
       if (w.size() > 2 && w.front() == L'"' && w.back() == L'"') w = w.substr(1, w.size() - 2);
-      DWORD attr = GetFileAttributesW(w.c_str());
-      if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) out.push_back(narrow(w));
+      // (18g, 17/11, varredura: whether it is a file is the caller's to ask, on a worker. Asked here,
+      // on the window's thread, with the clipboard held, a path on a sleeping disk froze both)
+      if (as_text && !w.empty() && w.size() < 32768 && w.find_first_of(L"\r\n\t") == std::wstring::npos) {
+        out.push_back(narrow(w));
+        *as_text = true;
+      }
     }
   }
   CloseClipboard();
   return out;
 }
 
-static bool reg_set(HKEY root, const std::wstring& key, const wchar_t* name, const std::wstring& val) {
+[[maybe_unused]] static bool reg_set(HKEY root, const std::wstring& key, const wchar_t* name, const std::wstring& val) {
   HKEY k;
   if (RegCreateKeyExW(root, key.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &k, nullptr) != ERROR_SUCCESS) return false;
   LONG r = RegSetValueExW(k, name, 0, REG_SZ, (const BYTE*)val.c_str(), (DWORD)((val.size() + 1) * sizeof(wchar_t)));
@@ -225,17 +262,24 @@ static bool reg_set(HKEY root, const std::wstring& key, const wchar_t* name, con
 
 // Two file types: video (Cue's own icon) and music (the same tile with a note, icon 2).
 // Files Windows already opens with Cue keep the type they were chosen with until chosen again.
-static const wchar_t* kVideoExts[] = {L".mkv", L".mp4", L".m4v", L".mov", L".avi", L".webm", L".wmv", L".ts", L".m2ts", L".mpg", L".mpeg", L".ogv", L".divx", L".dv", L".dif"};
-static const wchar_t* kAudioExts[] = {L".ogg", L".oga", L".opus", L".mp3", L".m4a", L".aac", L".wav", L".flac", L".aif", L".aiff", L".wma", L".mka"};
+[[maybe_unused]] static const wchar_t* kVideoExts[] = {L".mkv", L".mp4", L".m4v", L".mov", L".avi", L".webm", L".wmv", L".ts", L".m2ts", L".mpg", L".mpeg", L".ogv", L".divx", L".dv", L".dif"};
+[[maybe_unused]] static const wchar_t* kAudioExts[] = {L".ogg", L".oga", L".opus", L".mp3", L".m4a", L".aac", L".wav", L".flac", L".aif", L".aiff", L".wma", L".mka"};
 static const wchar_t* kVideoProg = L"Software\\Classes\\tinyoffice.Cue.video";
 static const wchar_t* kAudioProg = L"Software\\Classes\\tinyoffice.Cue.audio";
 // Settings → Default apps → Cue lists every type below with its own file type, so music
 // chosen there gets the music icon. "Open with" can only offer Cue; Windows keeps a choice made
 // earlier (on an older version) until it is made again.
 static const wchar_t* kCapabilities = L"Software\\tinyoffice\\Cue\\Capabilities";
-static const wchar_t* kMediaTypes = L"video-audio-4";  // bumped when the registration's shape changes
+static const wchar_t* kMediaTypes = L"video-audio-5";  // bumped when the registration's shape changes
 
 bool register_open_with(std::string* err) {
+#if CUE_STORE_BUILD
+  // The package manifest declares Cue's file types (windows.fileTypeAssociation). A packaged
+  // app's HKCU writes stay private to the package, and the path below would point into
+  // WindowsApps, which Explorer cannot launch: nothing to write.
+  (void)err;
+  return true;
+#else
   wchar_t exe[MAX_PATH * 4];
   GetModuleFileNameW(nullptr, exe, (DWORD)(sizeof exe / sizeof exe[0]));
   std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"%1\"";
@@ -247,6 +291,14 @@ bool register_open_with(std::string* err) {
            reg_set(HKEY_CURRENT_USER, std::wstring(prog) + L"\\shell\\open\\command", nullptr, cmd);
   };
   bool ok = prog_set(kVideoProg, str::win_progid, L",0") && prog_set(kAudioProg, str::win_progid_audio, L",-2");
+  // Explorer's pictures of films and album covers: Explorer asks the file type that opens a file
+  // for its thumbnail handler first. Windows' own handler for media is often registered only on
+  // the type that opened the file before (Windows Media Player's), so files handed to Cue lost
+  // their pictures on some PCs (reports of 14/11). Cue's two types name Windows' handler
+  // themselves; Cue makes no thumbnails of its own and touches no other type's registration
+  for (const wchar_t* prog : {kVideoProg, kAudioProg})
+    for (const wchar_t* kind : {L"{e357fccd-a995-4576-b01f-234630154e96}", L"{BB2E617C-0920-11D1-9A0B-00C04FC2D6C1}"})
+      ok = reg_set(HKEY_CURRENT_USER, std::wstring(prog) + L"\\ShellEx\\" + kind, nullptr, L"{9DBD2C50-62AD-11D0-B806-00C04FD706EC}") && ok;
   std::wstring app = L"Software\\Classes\\Applications\\Cue.exe";
   ok = ok && reg_set(HKEY_CURRENT_USER, app + L"\\shell\\open\\command", nullptr, cmd) &&
        reg_set(HKEY_CURRENT_USER, app, L"FriendlyAppName", L"Cue");
@@ -296,9 +348,11 @@ bool register_open_with(std::string* err) {
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
   if (!ok && err) *err = "register failed";  // log only
   return ok;
+#endif
 }
 
 void refresh_open_with() {
+  if (CUE_STORE_BUILD) return;  // see register_open_with
   // Portable updates can leave Explorer's old Player registration behind.
   // Only the main process calls this; thumbnail helpers must never register.
   const wchar_t* app = L"Software\\Classes\\Applications\\Cue.exe";
@@ -349,6 +403,17 @@ bool system_reduce_motion() {
   BOOL anim = TRUE;
   SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0);
   return !anim;
+}
+
+// Windows' own animation when a window is minimized and restored ("Animation effects" in the
+// accessibility settings turns it off with the rest)
+bool system_window_animation() {
+#ifdef CUE_MEASURE_WINDOW_ANIMATION  // (Wine never animates windows: the measurements ask for Windows' default)
+  return true;
+#endif
+  ANIMATIONINFO ai{sizeof(ai), 1};
+  if (!SystemParametersInfoW(SPI_GETANIMATION, sizeof(ai), &ai, 0)) return true;
+  return ai.iMinAnimate != 0;
 }
 
 bool system_high_contrast() {
@@ -435,6 +500,44 @@ bool remote_path_allowed(const std::string& root, const std::string& path) {
   if (rp.empty() || pp.size() < rp.size()) return false;
   if (CompareStringOrdinal(rp.data(), (int)rp.size(), pp.data(), (int)rp.size(), TRUE) != CSTR_EQUAL) return false;
   return pp.size() == rp.size() || rp.back() == L'\\' || pp[rp.size()] == L'\\';
+}
+
+bool on_external_drive(const std::string& path) {
+  const std::wstring w = widen(path);
+  if (w.size() < 3 || w[1] != L':' || (w[2] != L'\\' && w[2] != L'/')) return false;
+  const wchar_t letter = (wchar_t)towupper(w[0]);
+  if (letter < L'A' || letter > L'Z') return false;
+  static std::mutex mu;
+  static signed char known[26];  // 0 not asked, 1 external, -1 not
+  {
+    std::lock_guard lock(mu);
+    if (known[letter - L'A']) return known[letter - L'A'] > 0;
+  }
+  const wchar_t root[4] = {letter, L':', L'\\', 0};
+  const UINT type = GetDriveTypeW(root);
+  bool external = type == DRIVE_REMOVABLE;
+  if (type == DRIVE_FIXED) {
+    // the volume's device, opened with no access to its data: asks the driver, not the disk
+    const wchar_t volume[7] = {L'\\', L'\\', L'.', L'\\', letter, L':', 0};
+    HANDLE h = CreateFileW(volume, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      STORAGE_PROPERTY_QUERY q{};
+      q.PropertyId = StorageDeviceProperty;
+      q.QueryType = PropertyStandardQuery;
+      alignas(8) unsigned char buf[1024]{};
+      DWORD got = 0;
+      if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof q, buf, sizeof buf, &got, nullptr) &&
+          got >= sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
+        const auto* d = reinterpret_cast<const STORAGE_DEVICE_DESCRIPTOR*>(buf);
+        external = d->BusType == BusTypeUsb || d->BusType == BusType1394 || d->BusType == BusTypeSd ||
+                   d->BusType == BusTypeMmc || d->RemovableMedia;
+      }
+      CloseHandle(h);
+    }
+  }
+  std::lock_guard lock(mu);
+  known[letter - L'A'] = external ? 1 : -1;
+  return external;
 }
 
 std::vector<std::wstring> folder_files(const std::wstring& dir, size_t max) {

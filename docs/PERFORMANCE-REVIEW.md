@@ -1,3 +1,102 @@
+# Performance and bug review · Cue 1.4, second round
+
+Review date: 2026-11-12. Priorities: playback first (opening, the first frame, nothing stalling,
+seeking), then CPU, memory, disk and battery with Cue paused, on the home or minimized, then
+reproducible bugs. Nothing visible changed except where the author chose (the colours' pace, the
+home's poll when still). Measured with the shipped engine under Wine 9.0 (two cores) and a
+counting build that logs, every 5 s, the messages that woke the window (not shipped), and with
+`tools/benchmark_frames.cpp`. Wine is not Windows: the steps for the author's PC are in the
+report.
+
+| Case | Before | After | How |
+|---|---:|---:|---|
+| picture opening after the first frame (2.39:1 film) | 367 to 391 ms | 0 ms | `cue.log` with `--log`, 5 and 7 runs |
+| a request to the picture (same file) | 1,401 to 1,604 ms | 1,083 to 1,181 ms | same |
+| a 2:00 file whose data ends at 0:47: saved place | 0 (finished) | 47.9 s | `state.json` |
+| colour samples of a film with a keyframe every 10 s, 52 s playing | 12.0 s decoding | 6.6 s | `cue.log` (decode_ms) |
+| the same with a keyframe every second | 11 samples, 85 ms each | 10, 47 ms | same (unchanged pace) |
+| wake-ups, paused, controls away, pointer still | 30.3 /s | 4.0 /s | counting build |
+| wake-ups, home in view, pointer still | 30.3 /s | 10.4 /s | counting build |
+| eye frames, home behind another window, pointer moving there | 30 /s | 0 (blinks only) | counting build |
+| a frame of the eyes following the pointer, 4K / 1080p | 11.5 / 1.45 ms | 0.36 / 0.06 ms | `benchmark_frames` (same final pixels) |
+| preview helper idle on the home | stays | ends after 60 s | counting build, process list |
+| remote on with no phone: wake-ups of its server thread | 2 /s | 0 | thread context switches |
+| turning the remote off: UI thread held | 8 to 429 ms (mean 211) | 1 to 2 ms | 12 starts and stops |
+
+Causes and changes, in order of impact:
+
+1. **The film's shape at load was never used for a plain film.** `configure_audio_mode` set
+   `early_shape_` only when the track named its rotation, and the engine lists
+   `demux-rotation` only for a turned film. `demux_shape` (core/media_geometry.h) treats a
+   missing rotation as none.
+2. **An early end counted as the end.** `O_EOF` zeroed the place and queued the next
+   episode. `stopped_short` (core/episode_advance.h): more than 3% (30 s at least) before the
+   length, a film keeps its place and does not hand over.
+3. **Exact colour seeks on long GOPs.** `ColourPace` (core/colour_pace.h) measures what a
+   colour sample costs this film (the helper's `decode_ms`) and stretches the interval so the
+   helper works at most 10% of the time (at most 15 s apart).
+4. **The 33 ms poll ran whatever happened.** `poll_pace` (core/poll_pace.h) sets its pace at
+   the end of each poll; `ensure_anim`, engine events, the phone and activation bring it back.
+   `under_active_window` (DWM frame bounds of the foreground window containing Cue's) stops the
+   eyes following behind another app.
+5. **Whole home frames for the eyes.** `Canvas` gained a clip; `HomeView::eyes_only_key` names
+   everything on the home but the face, and `face_reach` bounds every pixel the face can draw
+   (3.9% of the window). Same key: the app draws only that corner, in place, and gives Windows
+   the rows that changed.
+6. **Idle helper.** `T_HELPER_REST`: 60 s after the home has nothing for it.
+7. **Remote loop.** A loopback datagram socket in its `select`: no timeout without phones;
+   `stop` rings it before joining.
+
+Bugs without a reproduction here (Windows only), fixed by reading: cloud-only songs read for
+their covers by `make_image` (phone, "up next"), full screen not refitted on `WM_DISPLAYCHANGE`,
+the place not written on `PBT_APMSUSPEND`. Not changed: paths over 260 characters (the
+manifest is not long-path aware; to be confirmed on the PC first) and a read-ahead of the engine
+DLL at a cold start (to be measured first).
+
+# Performance review · Cue 1.4
+
+Review date: 2026-11-11. Same rules as below: nothing visible changes, and no quality,
+resolution or cadence is lowered to claim a gain.
+
+## Measured
+
+`tools/benchmark_frames.cpp` (new): the portable interface at 1920×1080 (scale 1.5) and
+3840×2160 (scale 3), 600 frames per case, Linux x86_64, GCC 13.3 `-O2`, two cores. It reports
+CPU time per frame, heap allocations and the bytes the player would hand to the engine. The
+final pixels of every case are hashed; 1.3.2 and 1.4 give the same hashes.
+
+| Case | 1.3.2 | 1.4 |
+|---|---:|---:|
+| home fading in (back from a film), 4K | 23.5 ms/frame | 6.4 ms/frame |
+| home fading in, 1080p | 5.3 ms/frame | 1.7 ms/frame |
+| one translucent fill over a 4K canvas | 34.0 ms | 4.5 ms |
+| a 4K scene faded as a whole (`scale_alpha`: pairing screen, what's new) | 25.9 ms | 3.7 ms |
+| home resting / eyes following the pointer, 4K | 4.4 / 4.2 ms/frame | 4.3 / 4.4 ms/frame (unchanged, within noise) |
+
+At 4K a home fade frame took longer than a 60 Hz frame (16.7 ms), so the fade back from a film
+dropped frames on large screens; it now fits with room to spare. The player's own interface
+(controls moving, resting, the timeline preview, menus opening, music) costs 0.001–0.26 ms per
+frame at 4K in the same benchmark and did not need changes.
+
+Change: source-over of one premultiplied colour, and the whole-canvas alpha scale, run four
+pixels at a time with SSE2 (every x64 processor), using the exact rounding of the scalar code:
+`(x + 1 + (x >> 8)) >> 8` equals `x / 255` rounded for every value the blend produces. Verified
+for every source alpha, source channel and destination channel (8.4 million pairs) and on
+whole canvases (`tests/raster_test.cpp`). Sources that are not premultiplied keep the scalar path.
+
+Reviewed and left as they are: the 30 Hz poll during playback (cheap Win32 queries, already
+slowed when minimized), overlay uploads (only changed layers, capped at the display's divisor of
+60 Hz), the ambient light (paints at 30 Hz only when its colours change), the home's dirty-rect
+present, the engine's options (`video-sync=display-resample` is what keeps the interface at the
+display's rate over a film; changing it would change behaviour).
+
+## Native measurement
+
+`TESTES-NO-PC\3-MEDIR-DESEMPENHO.bat` in the delivery (it runs `tools/measure_resources.ps1`)
+records CPU, memory, threads, handles and I/O of Cue and its preview helper while a film plays:
+run it with 1.3.2 and with 1.4 on the same film and window. GPU time needs Task Manager or a
+graphics trace. None of this was measured here.
+
 # Performance and stability review · Cue 1.3.2
 
 Review date: 2026-11-09. Input: the supplied Cue-1.3.2-Pacote(1).zip.

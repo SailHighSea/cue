@@ -25,8 +25,8 @@ const server=http.createServer((req,res)=> {
     localStorage.setItem('cue.token.v2','a'.repeat(64));
     window.__sent=[];
     window.WebSocket=class {
-      constructor(){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();},5);}
-      send(data){const m=JSON.parse(data);window.__sent.push(m);if(m.t==='auth'){window.__ws=this;setTimeout(()=>{this.onmessage?.({data:JSON.stringify({t:'hello',pc:'Cue PC'})});this.onmessage?.({data:JSON.stringify({t:'state',view:'play',file:'Twin Peaks - S01E06.mkv',pos:120,dur:3600,speed:1,vol:100,paused:false,ended:false,audioOnly:false,sub:{has:true,on:true,delay:0,size:44,sizeMin:28,sizeMax:72,pos:93,posDefault:93,posMin:12,posMax:97},audio:{n:1,i:0},timer:{m:0,left:0},next:'',color:'#a0508f'})});},5);}}
+      constructor(){this.readyState=0;setTimeout(()=>{this.readyState=1;this.onopen?.();this.onmessage?.({data:'{"t":"chal","n":"0123456789abcdef0123456789abcdef"}'});},5);}
+      send(data){const m=JSON.parse(data);window.__sent.push(m);if(m.t==='auth'){window.__ws=this;setTimeout(()=>{this.onmessage?.({data:JSON.stringify({t:'hello',sid:'a1b2c3d4e5f60718',pc:'Cue PC'})});this.onmessage?.({data:JSON.stringify({t:'state',view:'play',file:'Twin Peaks - S01E06.mkv',pos:120,dur:3600,speed:1,vol:100,paused:false,ended:false,audioOnly:false,sub:{has:true,on:true,delay:0,size:44,sizeMin:28,sizeMax:72,pos:93,posDefault:93,posMin:12,posMax:97},audio:{n:1,i:0},timer:{m:0,left:0},next:'',color:'#a0508f'})});},5);}}
       close(){this.readyState=3;}
     };
   });

@@ -55,6 +55,16 @@ inline double ui_scale(unsigned dpi, int cw, int ch, int choice) {
   return std::max(1.0, std::min(s, std::max(1.0, fit)));
 }
 
+// The scale a song's window is told apart at (which of music's compositions: music_frame_for):
+// the chosen size's, but never past the default size's (16/11). The compositions are told apart
+// by the room in art px, and the large sizes' bigger pixel made every window "small" there: at
+// "larger" even a 1920 x 1080 window was the Compacto, without the song's name; and as that pixel
+// steps up with a growing window, the name came and went while the window was resized. What the
+// composition draws keeps the chosen size.
+inline double music_frame_scale(unsigned dpi, int cw, int ch, int choice) {
+  return std::min(ui_scale(dpi, cw, ch, choice), ui_scale(dpi, cw, ch, kDefaultUiSize));
+}
+
 // Portrait windows recompose the controls into a compact dock about this many px of art wide.
 constexpr int kCompactDockW = 204;
 // Instead of stretching that dock across the whole width at the landscape scale (tiny icons),
@@ -112,6 +122,29 @@ inline double music_compact_scale(double s, int cw, int ch, int /*choice*/, doub
   if (cw <= 0 || ch <= 0) return s;
   double fit = std::floor(std::min(cw * 0.8 / kMusicCompactW, ch / 4.0 / 38.0) * 2) / 2;
   return std::max(s, std::min(base, fit));
+}
+
+// Music's smallest windows (Micro: the cover is the window; the strip): the window's own scale
+// shrinks with the window, which left their few controls and words tiny and hard to hit. They get
+// the screen's standard size for the chosen interface size, stepped down by half art px only until
+// their layout has its room (Micro: 130 art px a side; the strip: 276 x 60)
+constexpr int kMicroArt = 130, kStripArtW = 276, kStripArtH = 80;  // (strip: 80 high, so the playback clears the window buttons above it: 15/11)
+inline double music_small_scale(unsigned dpi, int cw, int ch, int choice, bool strip) {
+  if (cw <= 0 || ch <= 0) return 1;
+  const double fit = strip ? std::min(cw / (double)kStripArtW, ch / (double)kStripArtH) : std::min(cw, ch) / (double)kMicroArt;
+  return std::max(1.0, std::min(ui_base_scale(dpi, choice), std::floor(fit * 2) / 2));
+}
+// the wide and low window (15/11: its window buttons, playback and words came out tiny, the
+// window's own scale shrinking with its height): the screen's standard size too, down only until
+// its composition has its room (a cover with its wings, the words and the bar: 380 x 124 art px;
+// 17/11: 110 high was short of the column's own need, the top strip, the words, the timeline and
+// previous · play · next, 26 + 2 + 90 + 6: at the large sizes in a window 220 to 247 px high at
+// 100% the playback was cut by the window's foot)
+constexpr int kWideArtW = 380, kWideArtH = 124;
+inline double music_wide_scale(unsigned dpi, int cw, int ch, int choice) {
+  if (cw <= 0 || ch <= 0) return 1;
+  const double fit = std::min(cw / (double)kWideArtW, ch / (double)kWideArtH);
+  return std::max(1.0, std::min(ui_base_scale(dpi, choice), std::floor(fit * 2) / 2));
 }
 
 // The mini players are laid out in art px and keep a small window at every interface size: a

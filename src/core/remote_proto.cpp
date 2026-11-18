@@ -130,6 +130,7 @@ int parse_request(std::string_view buf, Request& out, size_t& header_len) {
   out.method = std::string(first.substr(0, a));
   std::string_view target = first.substr(a + 1, b - a - 1);
   if (target.empty() || target[0] != '/' || target.find('#') != std::string_view::npos) return -1;
+  out.target = std::string(target);
   size_t q = target.find('?');
   out.path = url_decode(target.substr(0, q));
   if (out.path.find_first_of(std::string("\0\r\n", 3)) != std::string::npos) return -1;
@@ -335,7 +336,7 @@ bool is_video_name(std::string_view name) {
 
 bool is_audio_name(std::string_view name) {
   static const char* v[] = {"mp3", "m4a", "aac", "flac", "wav", "ogg", "oga", "opus", "wma", "aiff", "aif", "ape",
-                            "mka", "alac", "wv"};
+                            "mka", "alac", "wv", "m4b"};
   std::string e = ext_of(name);
   for (auto x : v) if (e == x) return true;
   return false;
@@ -664,6 +665,15 @@ std::string state_json(const State& s) {
   o += ",\"queueResult\":"+std::to_string(s.queue_result);
   o += ",\"queueNoticeId\":"+std::to_string(s.queue_notice_id)+",\"queueNotice\":"+escape(s.queue_notice);
   o += ",\"next\":" + escape(s.next);
+  o += ",\"prev\":" + escape(s.prev);
+  if (!s.skip.empty()) o += ",\"skip\":{\"kind\":" + escape(s.skip) + ",\"to\":" + num(s.skip_to, 1) + "}";
+  if (s.chapters.size() >= 2) {
+    // to the millisecond, rounded up: a jump lands inside its chapter, never just before it
+    o += ",\"ch\":[";
+    for (size_t i = 0; i < s.chapters.size(); ++i)
+      o += (i ? ",[" : "[") + num(std::ceil(std::max(0.0, s.chapters[i].first) * 1000) / 1000, 3) + "," + escape(s.chapters[i].second) + "]";
+    o += "]";
+  }
   o += std::string(",\"nextAuto\":") + (s.next_auto ? "true" : "false");
   if (!s.lang.empty()) o += ",\"lang\":" + escape(s.lang);
   o += ",\"color\":" + escape(s.color);
@@ -690,7 +700,7 @@ bool parse_command(std::string_view text, Command& out) {
   }
   out.path = j["path"].str();
   if (out.path.size() > 4096 || out.path.find('\0') != std::string::npos) return false;
-  static const char* simple[] = {"toggle", "next", "what"};
+  static const char* simple[] = {"toggle", "next", "prev", "what", "skip-part"};  // ("skip" is the relative seek, with v)
   for (auto k : simple) if (out.c == k) return true;
   if(out.c=="queue-add")return !out.path.empty()&&is_playable_name(out.path);
   if(out.c=="queue-folder")return !out.path.empty();

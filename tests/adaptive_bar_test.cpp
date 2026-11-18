@@ -77,7 +77,7 @@ int main() {
               assert(hot(p, B::B_TIMELINE).y > hot(p, B::B_PLAY).y);
               continue;
             }
-            assert(p.dh_ == (int)(38 * scale));  // two rows: the controls and the timeline
+            assert(p.dh_ == (int)((music ? 38 : 41) * scale));  // two rows: the controls and the timeline (the film's further apart, 16/11)
             const int dw = p.dw_;
             assert(dw <= (int)std::lround(art_w * scale));
             // play on the centre, "..." at the right end, full screen always on the bar
@@ -128,7 +128,7 @@ int main() {
     p.panel_adjust(row, 1, t);
     auto a = p.take_actions(); assert(!a.empty() && a[0].a == PA::Volume && a[0].v == 65);
     p.activate(B::B_VOL, t); assert(p.panel_ == B::Panel::None);  // the icon closes it again
-    p.wheel(1, t); assert(p.flash_text_ == "70%");
+    p.wheel(1, t); assert(p.flash_kind_ == 3 && p.flash_vol_ == 70);  // (16/11: the volume's meter, not a text box)
     // widened: the line comes back and the icon mutes as before
     p.resize(900 * 2, 500 * 2, 2); assert(!p.vol_folded_ && p.in_bar(B::B_VOLBAR));
     p.take_actions(); p.activate(B::B_VOL, t); a = p.take_actions(); assert(a.size() == 1 && a[0].a == PA::ToggleMute);
@@ -204,7 +204,7 @@ int main() {
       bool drag = false; for (auto& x : p.take_actions()) drag |= x.a == PA::WinDragBegin; assert(drag);
       p.mouse_up(gx + 30, gy + 10, t); p.take_actions();
     }
-    p.in.mini_player = false; p.resize(1280, 720, 2); assert(!p.mini_ && p.dh_ == 38 * 2);
+    p.in.mini_player = false; p.resize(1280, 720, 2); assert(!p.mini_ && p.dh_ == 41 * 2);  // (the film's bar)
   }
   // music in a reduced window (framed on the cover, words under it): previous, play, next, the
   // timeline, the volume's icon and "..."; everything else (full screen too) in "..."
@@ -214,7 +214,14 @@ int main() {
     p.in.music_scene = MusicScene::wide();
     p.in.music_view = music_view(p.in.music_scene, m, 1300, 900, 800);
     p.resize(1300, 900, 2); double t = 1; p.reset(t);
-    if (m == MusicFrame::Scene || m == MusicFrame::Centre) {
+    if (m == MusicFrame::Scene) {
+      // (wide and low since the rascunho of 14/11: the timeline between its times, the playback
+      // under it, in the column beside the cover; no volume, no "...", no full screen button)
+      assert(p.music_card_mode() == 4 && !p.in_bar(B::B_FS) && !p.in_bar(B::B_VOL) && !p.in_bar(B::B_MORE));
+      assert(hot(p, B::B_TIMELINE).y < hot(p, B::B_PLAY).y && p.in_bar(B::B_PREV) && p.in_bar(B::B_NEXT));
+      continue;
+    }
+    if (m == MusicFrame::Centre) {
       // the roomy compositions with the bar's background: the film's compact bar (the buttons
       // over the timeline), centred low, with the list's count beside its icon
       assert(!p.music_compact_ && !p.music_full_ && p.in_bar(B::B_FS) && p.dh_ == 38 * 2 && p.dw_ < 1300 * 6 / 10);
@@ -246,9 +253,18 @@ int main() {
       continue;
     }
     assert(p.music_compact_);
+    if (p.music_card_mode() == 1) {  // (the Compacto since 14/11: the timeline on the cover's foot, the playback under it)
+      for (int id : {B::B_PREV, B::B_PLAY, B::B_NEXT, B::B_TIMELINE}) assert(p.in_bar(id));
+      for (int id : {B::B_VOL, B::B_MORE, B::B_FS, B::B_LOOP, B::B_QUEUE, B::B_SPEED}) assert(!p.in_bar(id));
+      continue;
+    }
     for (int id : {B::B_PREV, B::B_PLAY, B::B_NEXT, B::B_VOL, B::B_MORE, B::B_TIMELINE}) assert(p.in_bar(id));
     for (int id : {B::B_FS, B::B_LOOP, B::B_QUEUE, B::B_SPEED}) assert(!p.in_bar(id) && p.overflowed(id));
-    assert(p.vol_folded_ && p.dw_ <= 210 * 2);  // a compact bar, not the window's width
+    // (tall since the rascunho of 14/11: the timeline along the window's foot between its two
+    // times; under it the volume at the left end, the playback in the middle, "..." at the right)
+    assert(p.music_card_mode() == 5 && p.vol_folded_ && p.dw_ >= 1300 - 2 * 22 * 2 - 2);
+    assert(hot(p, B::B_TIMELINE).y < hot(p, B::B_PLAY).y);
+    assert(hot(p, B::B_VOL).r() < hot(p, B::B_PREV).x && hot(p, B::B_NEXT).r() < hot(p, B::B_MORE).x);
   }
   // buttons glide to a new fold and fade where they leave, only while the bar re-folds
   {

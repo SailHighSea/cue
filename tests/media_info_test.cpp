@@ -1,6 +1,8 @@
 #include "../src/core/i18n.h"
 #include "../src/core/media_info.h"
+#define private public
 #include "../src/ui/play.h"
+#undef private
 #include <cassert>
 #include <cstdio>
 #include <limits>
@@ -34,7 +36,11 @@ int main() {
     p.in.file_info=sound?audio:fields;++p.in.file_info_revision;p.changed(t);settle(p,t);
     const auto& layer=p.layers[PlayView::L_PANEL];
     assert(layer.visible && layer.x>=0 && layer.y>=0 && layer.x+layer.c.w<=w && layer.y+layer.c.h<=h);
-    assert(w-layer.x-layer.c.w <= (int)(9*scale));assert(layer.y<=(int)(27*scale));
+    // the details: in the top-right corner, under the window's buttons (where players keep their
+    // information), the big panels' width
+    auto placed=[&](const Layer& L,int W){ return W-L.x-L.c.w<=(int)(9*scale); };  // (the window's right edge)
+    assert(placed(layer,w));
+    if(p.big_panel()&&!p.in.fullscreen) assert(layer.y<=p.chrome_room()+(int)(4*scale)&&layer.y+layer.c.h<p.dock_rect().y);
     auto pixels=layer.c.px;
     p.in.time=50;p.changed(t);settle(p,t);
     assert(layer.c.px==pixels); // clock updates do not redraw/animate metadata content.
@@ -47,7 +53,7 @@ int main() {
     int old_x=layer.x;
     p.resize(w+100,h+100,scale);settle(p,t);
     const auto& moved=p.layers[PlayView::L_PANEL];(void)old_x;  // (a larger window: the card may be its full size again; it stays on the right)
-    assert((w+100)-moved.x-moved.c.w<=(int)(9*scale));assert(moved.x+moved.c.w<=w+100);
+    assert(placed(moved,w+100));assert(moved.x+moved.c.w<=w+100);
   }
-  std::puts("Metadata: formats, missing values, audio waveform exclusion, right-click route, top-right bounds, dismissal and stable playback passed");
+  std::puts("Metadata: formats, missing values, audio waveform exclusion, right-click route, the one panel's place, dismissal and stable playback passed");
 }

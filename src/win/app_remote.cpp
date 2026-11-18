@@ -2,6 +2,9 @@
 // independent pieces; this is where they meet the player. Every command from a phone goes
 // through the same actions as the dock, so the PC shows the same feedback ("+15", the pause
 // icon, "subtitles on") as if the person had clicked.
+#include <memory>
+#include <mutex>
+#include <thread>
 #include "app.h"
 
 #include <algorithm>
@@ -25,19 +28,42 @@ std::string hex_color(Rgb c) {
 
 bool App::remote_start() {
   if (remote_.running()) return true;
+  // (19j, 17/11: on the Biel's PC this held the window 35-250 ms, 1.5 s after Cue opened, in the middle
+  // of a film's or a song's opening. With --log, each step of 5 ms or more says how long it took)
+  double step_t = now();
+  auto step = [&](const char* what) {
+    const double t = now();
+    if (t - step_t >= 0.005) trace(std::string("remote start: ") + what + " took " + std::to_string((int)std::lround((t - step_t) * 1000)) + "ms");
+    step_t = t;
+  };
   remote_default_folders();
+  step("the shared folders");
   std::string err;
   if (!remote_.start(hwnd_, WM_APP_REMOTE, exe_dir() + L"\\fonts\\CueOmni.ttf", &err)) {
     log("remote: " + err);
     return false;
   }
+  step("the server (network, port, font)");
   trace("remote on port " + std::to_string(remote_.port()));
+  // the phones' credentials come out of their seal only now, never while Cue opens
+  if (!store_.remote_unsealed) {
+    if (const int dropped = store_.unseal_remote()) {
+      log("remote: " + std::to_string(dropped) + " remembered phone(s) could not be read back and will pair again");
+      store_.seal_remote();
+      save_state();
+    }
+  }
+  if (store_.remote_needs_seal) { store_.seal_remote(); save_state(); }  // from before 1.4: sealed now
+  step("the phones' credentials");
   remote_.set_tokens(store_.remote_tokens);
   remote_queue_revision_=~uint64_t(0);
   remote_boot();
+  step("the page's words");
   remote_roots();
+  step("the folders' list");
   remote_progress();
   remote_publish();
+  step("the state for the phones");
   SetTimer(hwnd_, T_REMOTE, 500, nullptr);
   return true;
 }
@@ -50,7 +76,7 @@ void App::remote_stop(bool tell_phones) {
   remote_verified_path_.clear();
   if (folder_scan_ && folder_scan_->remote) folder_scan_->cancelled = true;
   remote_.stop(tell_phones);
-  if (tell_phones) { store_.remote_tokens.clear(); remote_.set_tokens({}); save_state(); }
+  if (tell_phones) { store_.forget_remote(); remote_.set_tokens({}); save_state(); }
   remote_devices_.clear();
   if (scene_.visible()) scene_.view.phones.clear();
   if (!remote_timer_) KillTimer(hwnd_, T_REMOTE);
@@ -63,7 +89,7 @@ void App::remote_boot() {
   bool first = true;
   for (int i = 0; i < str::kCount; ++i) {
     std::string key = i18n::key_name((str::Id)i);
-    if (key.rfind("remote.", 0) != 0 && key.rfind("queue.",0)!=0 && key != "number.decimal") continue;
+    if (key.rfind("remote.", 0) != 0 && key.rfind("queue.",0)!=0 && key.rfind("player.skip_", 0) != 0 && key != "number.decimal") continue;
     o += (first ? "" : ",") + json_quote(key) + ":" + json_quote(tr((str::Id)i));
     first = false;
   }
@@ -75,10 +101,10 @@ void App::remote_boot() {
 
 void App::remote_default_folders() {
   if (store_.remote_folders_set) return;
-  auto d = default_media_folders();  // Videos, Downloads, Desktop
+  auto d = default_media_folders();  // Videos, Music, Downloads, Desktop
   store_.remote_folders.clear();
   for (size_t i = 0; i < d.size(); ++i)
-    if (!d[i].empty()) store_.remote_folders.push_back({d[i], i < 2});  // the desktop waits to be chosen
+    if (!d[i].empty()) store_.remote_folders.push_back({d[i], i < 3});  // the desktop waits to be chosen
   store_.remote_folders_set = true;
   save_state();
 }
@@ -91,13 +117,49 @@ void App::remote_roots() {
   std::vector<RemoteServer::Root> roots;
   for (auto& f : store_.remote_folders)
     if (f.on)
-      roots.push_back({folder_display_name(f.path), f.path});
+      roots.push_back({remote_folder_name(f.path), f.path});
   remote_.set_roots(std::move(roots));remote_queue_revision_=~uint64_t(0);
+}
+
+// (19l, 17/11, varredura) A shared folder's name as Explorer shows it ("Vídeos"), asked of the shell on a
+// worker and kept. Asked on the window's thread it took 32-39 ms at every start on the Biel's PC (the
+// remote's whole start-up), and the shell reads the disk: a sleeping one or a share, seconds. Until it
+// comes, the folder's own name; when it comes, the phones get the shell's (only if it differs).
+static std::string folder_own_name(const std::string& path) {
+  size_t k = path.find_last_of("\\/", path.size() > 1 ? path.size() - 2 : 0);
+  std::string out = k == std::string::npos ? path : path.substr(k + 1);
+  while (!out.empty() && (out.back() == '\\' || out.back() == '/')) out.pop_back();
+  return out.empty() ? path : out;
+}
+
+std::string App::remote_folder_name(const std::string& path) {
+  if (auto it = folder_names_.find(path); it != folder_names_.end()) return it->second;
+  if (folder_names_asked_.insert(path).second) {
+    try {
+      std::thread([this, path, hwnd = hwnd_] {
+        const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        std::string name;
+        try { name = folder_display_name(path); } catch (...) {}
+        if (SUCCEEDED(co)) CoUninitialize();
+        auto* f = new std::function<void()>([this, path, name] {
+          if (name.empty()) return;
+          folder_names_[path] = name;
+          if (name != folder_own_name(path) && remote_.running()) {
+            std::vector<RemoteServer::Root> roots;
+            for (auto& r : store_.remote_folders) if (r.on) roots.push_back({remote_folder_name(r.path), r.path});
+            remote_.set_roots(std::move(roots));
+          }
+        });
+        if (!PostMessageW(hwnd, WM_APP_FILE_KINDS, 0, (LPARAM)f)) delete f;
+      }).detach();
+    } catch (...) {}
+  }
+  return folder_own_name(path);
 }
 
 std::vector<RemoteChip> App::remote_chips() const {
   std::vector<RemoteChip> chips;
-  for (auto& f : store_.remote_folders) chips.push_back({folder_display_name(f.path), f.on});
+  for (auto& f : store_.remote_folders) chips.push_back({const_cast<App*>(this)->remote_folder_name(f.path), f.on});
   return chips;
 }
 
@@ -130,11 +192,11 @@ void App::remote_publish() {
       if(name.size()>240) {size_t end=240;while(end>0&&((unsigned char)name[end]&0xc0)==0x80)--end;name.resize(end);name+="…";}
       // a song's cover is shown wherever it lives (see /queue-thumb); a film's frame only
       // from a shared folder
-      bool preview=remote::is_audio_name(item.path);
+      bool preview=audio_path(item.path);
       if(remote::is_video_name(item.path))for(const auto& root:store_.remote_folders)
         if(root.on&&remote::path_within(root.path,item.path))preview=true;
       queue_files.push_back({item.id,item.path});
-      json+=(first?"":",")+std::string("{\"id\":")+std::to_string(item.id)+",\"name\":"+json_quote(name)+",\"current\":"+(item.id==queue_.current()?"true":"false")+",\"audio\":"+(remote::is_audio_name(item.path)?"true":"false")+",\"preview\":"+(preview?"true":"false")+"}";
+      json+=(first?"":",")+std::string("{\"id\":")+std::to_string(item.id)+",\"name\":"+json_quote(name)+",\"current\":"+(item.id==queue_.current()?"true":"false")+",\"audio\":"+(audio_path(item.path)?"true":"false")+",\"preview\":"+(preview?"true":"false")+"}";
       first=false;
     }
     json+="]}";remote_.set_queue(json,std::move(queue_files));remote_queue_revision_=queue_.revision();++remote_queue_epoch_;
@@ -171,6 +233,24 @@ void App::remote_publish() {
     if (amix_) { st.audio_index = -1; st.audio_mix = (int)in.amix_ids.size(); }  // several at once
     st.next_auto = next_auto_ && !next_cancelled_ && !store_.loop && remote_timer_ != -1;
     st.next = next_ep_.empty() ? "" : file_name(next_ep_);
+    // the one "prev" opens: the PC's own previous (P), shuffle included
+    if (queue_.active()) if (const auto* p = shuffle_previous()) st.prev = file_name(p->path);
+    st.skip = play_.offered_skip(&st.skip_to);  // "skip intro": the phone shows it too
+    // the chapters (empty when the PC has them off): at most 250, names cut at 80 bytes
+    if (in.chapters_on && in.chapters.size() >= 2) {
+      const size_t n = std::min<size_t>(in.chapters.size(), 250);
+      st.chapters.reserve(n);
+      for (size_t i = 0; i < n; ++i) {
+        std::string name = in.chapters[i].title;
+        if (name.size() > 80) {
+          size_t end = 80;
+          while (end > 0 && ((unsigned char)name[end] & 0xc0) == 0x80) --end;
+          name.resize(end);
+          name += "…";
+        }
+        st.chapters.emplace_back(in.chapters[i].t, std::move(name));
+      }
+    }
   }
   st.timer = remote_timer_;
   st.timer_left = remote_timer_ > 0 ? std::max(0.0, remote_timer_end_ - now()) : 0;
@@ -208,6 +288,7 @@ void App::remote_events() {
     if (e.kind == RemoteServer::Event::Paired) {
       store_.remote_tokens.push_back(e.token);
       while (store_.remote_tokens.size() > remote::kMaxTokens) store_.remote_tokens.erase(store_.remote_tokens.begin());
+      store_.seal_remote();  // only the new phone's credential is sealed; the others keep theirs
       remote_.set_tokens(store_.remote_tokens);
       save_state();
     }
@@ -243,12 +324,20 @@ void App::remote_validate(remote::Command cmd) {
   if (cmd.c == "queue-add" || cmd.c == "queue-folder") job->add_epoch = remote_add_epoch_ + 1;
   if (cmd.c == "queue-play") {
     const auto* item = queue_.get((uint32_t)cmd.v); if (!item) return;
-    cmd.path = item->path;
+    cmd.path = item->path; job->from_pc = true;
   } else if (cmd.c == "next") {
     if (queue_.active()) {
       const auto* item = queue_following(); if (!item) return;
       cmd.c = "queue-play"; cmd.v = item->id; cmd.path = item->path;
     } else cmd.path = next_ep_;
+    job->from_pc = true;
+  } else if (cmd.c == "prev") {
+    // the PC decides which file came before (as P does): the phone's copy of the list can be a
+    // song behind, and asking for the playing file again would pause it
+    if (!queue_.active()) return;
+    const auto* item = shuffle_previous(); if (!item || item->id == queue_.current()) return;
+    cmd.c = "queue-play"; cmd.v = item->id; cmd.path = item->path;
+    job->from_pc = true;
   }
   if (cmd.path.empty()) return;
   if (cmd.c == "open" || cmd.c == "next" || cmd.c == "queue-play") {
@@ -268,7 +357,11 @@ void App::remote_validate(remote::Command cmd) {
       try {
         const auto& c = job->cmd;
         bool directory = c.c == "queue-folder";
-        if (directory || remote::is_playable_name(c.path)) {
+        if (job->from_pc) {
+          // still a playable file that exists: never a folder or anything the PC did not queue
+          DWORD attr = remote::is_playable_name(c.path) ? GetFileAttributesW(widen(c.path).c_str()) : INVALID_FILE_ATTRIBUTES;
+          job->allowed = attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+        } else if (directory || remote::is_playable_name(c.path)) {
           for (const auto& root : roots) if (root.on && remote_path_allowed(root.path, c.path)) {
             DWORD attr = GetFileAttributesW(widen(c.path).c_str());
             job->allowed = attr != INVALID_FILE_ATTRIBUTES && (directory == !!(attr & FILE_ATTRIBUTE_DIRECTORY));
@@ -306,7 +399,7 @@ void App::remote_command(const remote::Command& c) {
   const std::string& k = c.c;
   if ((!c.credential.empty() && std::find(store_.remote_tokens.begin(), store_.remote_tokens.end(), c.credential) == store_.remote_tokens.end()) ||
       (c.has_media && c.media != remote_media_epoch_)) { remote_publish(); return; }
-  if (!c.path_validated && (k == "open" || k == "next" || k == "queue-play" || k == "queue-add" || k == "queue-folder")) {
+  if (!c.path_validated && (k == "open" || k == "next" || k == "prev" || k == "queue-play" || k == "queue-add" || k == "queue-folder")) {
     remote_validate(c); return;
   }
   if(k=="queue-add") {if(c.path_validated) {size_t added=queue_add({c.path});queue_notice(tr(added?str::queue_added:str::queue_limit),added?1:3);}else queue_notice(tr(str::notice_open_failed),3);return;}
@@ -319,7 +412,7 @@ void App::remote_command(const remote::Command& c) {
     return;
   }
   if (k == "open") {
-    if (c.path_validated) open(c.path);
+    if (c.path_validated) { ++open_choice_; open(c.path); }
     return;
   }
   if (k == "timer") {
@@ -386,6 +479,8 @@ void App::remote_command(const remote::Command& c) {
   } else if (k == "next") {
     if (c.path_validated && c.path == next_ep_) open(c.path);
     return;
+  } else if (k == "skip-part") {
+    play_.remote_skip();  // (nothing when no part is offered any more)
   } else {
     return;
   }
@@ -503,6 +598,42 @@ void App::remote_peek_send() {
   if (it->first == k) remote_peek_want_ = -1;
 }
 
+void App::lan_refresh() {
+  {
+    std::lock_guard<std::mutex> lock(lan_->mu);
+    if (lan_->busy) return;
+    lan_->busy = true;
+  }
+  auto state = lan_;
+  HWND hwnd = hwnd_;
+  std::thread([state, hwnd] {
+    std::string ip = lan_address();
+    {
+      std::lock_guard<std::mutex> lock(state->mu);
+      state->ip = std::move(ip);
+      state->known = true;
+      state->busy = false;
+    }
+    PostMessageW(hwnd, WM_APP_LAN, 0, 0);
+  }).detach();
+}
+
+// the address for the scene: the last one the worker found (a fresh look is asked at once); the
+// very first time, there is none yet, and it is asked here and now as before
+std::string App::lan_now() {
+  std::string ip;
+  bool known = false;
+  {
+    std::lock_guard<std::mutex> lock(lan_->mu);
+    known = lan_->known;
+    ip = lan_->ip;
+  }
+  if (known) { lan_refresh(); return ip; }
+  ip = lan_address();
+  { std::lock_guard<std::mutex> lock(lan_->mu); lan_->ip = ip; lan_->known = true; }
+  return ip;
+}
+
 void App::open_remote_scene() {
   if (scene_.visible()) return;
   bool on = remote_start();
@@ -520,7 +651,7 @@ void App::open_remote_scene() {
   v.address.clear();
   v.code.clear();
   remote_pair_deadline_ = 0;
-  std::string ip = on ? lan_address() : "";
+  std::string ip = on ? lan_now() : "";
   if (!on) {
     v.problem = tr(str::remote_failed);
     v.set_link("");

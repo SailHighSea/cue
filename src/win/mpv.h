@@ -65,6 +65,7 @@ struct MpvApi {
   const char* (*error_string)(int);
   int (*command_ret)(mpv_handle*, const char**, mpv_node*);  // optional (client API 1.103+)
   int (*request_log_messages)(mpv_handle*, const char*);     // optional
+  int (*unobserve_property)(mpv_handle*, uint64_t);           // optional
 };
 
 class Mpv {
@@ -88,6 +89,7 @@ class Mpv {
   double get_double(const char* k, double def = 0);
   std::string get_string(const char* k);
   void observe(const char* k, mpv_format f, uint64_t id);
+  bool unobserve(uint64_t id);  // false: this engine cannot (the observation stays)
   mpv_event* wait() { return api_.wait_event(h_, 0); }
   void hook_add(const char* name, uint64_t id) { api_.hook_add(h_, id, name, 0); }
   void hook_continue(uint64_t id) { api_.hook_continue(h_, id); }
@@ -96,6 +98,9 @@ class Mpv {
   mpv_handle* handle() const { return h_; }
 
   static std::vector<Track> parse_tracks(const mpv_node* n);
+  // chapter-list: each chapter's start and name, in time order (at most 1000; names cut at 200
+  // bytes, between characters); entries without a time are skipped
+  static std::vector<Chapter> parse_chapters(const mpv_node* n);
 
  private:
   HMODULE dll_ = nullptr;

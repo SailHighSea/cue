@@ -20,7 +20,7 @@ While something plays, the taskbar preview of Cue (point at Cue's taskbar button
 
 At the end of a video, Cue pauses on the last frame. Play restarts it. Enable repeat to loop continuously.
 
-The home screen lists recent files in two lines each: the title and what is left (or the length, when not started), then a quieter line with the episode or the kind of file, over a thin progress rule. Episodes of one show become a single entry, named after the show and opening its latest episode, with the episode count when there are several (*RuPaul's Drag Race · faltam 25 min*, *S18E15 · 3 episódios*). Names are shown without extensions. Small windows show fewer entries rather than shrinking them. The **···** beside Recent opens a small menu (open folder, language, remote control and, set apart, clear recent) that unfolds from the button; a click anywhere outside closes it.
+The home screen lists recent files, each with its picture, its title and, on the right, what is left of a film, an episode or long audio left halfway. A quieter line under the title has the episode, the artist or the chapter, and the day it was last opened when that was not today (*S01E04 · ontem*, *capítulo 4 de 19 · há 2 semanas*); with nothing to say there, the title sits in the middle of the entry. Titles leave out what is only technical in brackets (*(audio)*, *(320 Kbps)*, *[1080p]*) and, for a song, its artist in front (*Jane Remover - Music Baby* is *Music Baby*, with *Jane Remover* below). A film's picture is the frame where it was left; songs, podcasts and audiobooks show their square cover (a song's record peeks out from behind it); a file without a picture gets a small pixel stand-in (a landscape, a note, a microphone or a book). The progress runs along the picture's foot. Episodes of one show become a single entry, named after the show and opening its latest episode. Names are shown without extensions. Long audio (20 minutes or more: podcasts, talks, audiobooks) is resumed where it was left, like a film; songs start over. Small windows show fewer entries rather than shrinking them. The **···** beside Recent opens a small menu (open folder, language, remote control and, set apart, clear recent) that unfolds from the button; a click anywhere outside closes it.
 
 ## Controls
 
@@ -30,6 +30,7 @@ The home screen lists recent files in two lines each: the title and what is left
 | F / Alt+Enter / double-click | Toggle fullscreen |
 | ← / → | Seek 5 seconds |
 | Shift+← / Shift+→ | Seek 30 seconds |
+| Page Up / Page Down | Previous / next chapter (films with chapters) |
 | « / » buttons | Seek 15 seconds |
 | L | Toggle repeat; preference is saved |
 | P | Previous file in up next |
@@ -58,6 +59,24 @@ Press **?** during playback for a sheet of every shortcut, in four groups (playb
 The music icon beside **CC** appears only for files with multiple audio tracks. Its menu also offers **multiple tracks**, where any of the tracks can be ticked to play at once (or **all** of them): made for recordings in parts, like an OBS capture with the game, the microphone and voice chat on separate tracks. Cue mixes such files on its own when none of their tracks carries a language or is named like a dub or commentary.
 Right-click to view file information, save a frame without subtitles, or close the video. The saved-frame confirmation can open its folder with the image selected.
 
+**A film's own audio file.** A dub, a commentary or a better mix that comes as a separate file
+(`.mka`, `.mp3`, `.m4a`, `.ac3`, `.flac`…) joins the film's tracks: **…** > **load audio track**
+when the film has a single sound, or the audio button's menu when it has several. The new track
+is chosen at once (with the same soft switch as any other) and stays in the list with the
+film's own, named after its file; the film's original sound is one click away. Like an added
+subtitle, it is for this playback: open the film again and add it again. Dragging a song onto
+Cue still opens it as music.
+
+**Chapters.** A film with chapters (MKV and MP4 carry them; an audiobook's M4B too) shows where
+each one begins as a one-pixel break in the timeline, and the preview over the timeline names
+the chapter of the moment it shows (*5 · A travessia*). **…** > **chapters** lists them, each with
+where it begins and the one playing marked; a click goes there. A long list scrolls like the
+subtitle tracks. **Page Down** goes to the next chapter and **Page Up** back to the start of this
+one (or to the one before, within its first 3 seconds), with a short note naming where it went;
+pressed in a row they count from the last jump. A file with a single chapter, or none, looks
+exactly as before. **Settings** > **chapters** turns them off: no breaks, no list, and Page Up / Page
+Down do nothing (the choice is kept).
+
 ## Subtitles and appearance
 
 Open **CC → style** to change the font, size, opacity, background, and position. Subtitle formats may limit available styling. Drag subtitles to reposition them; playback pauses during the gesture and resumes if it was playing. If they end up hard to read, **CC → restore default** (it appears, with a round arrow, whenever the look differs from the default) brings back your default look and position in one click; click it again right away to undo.
@@ -74,7 +93,7 @@ Explorer shows video files with Cue's icon and music files with the same tile an
 
 Right-click the picture for the context menu; a right click on the control bar does nothing. With a menu open, clicking another button of the bar closes the menu and acts at once.
 
-The **…** menu is grouped in four parts: the file (open, close), ambient lighting, appearance (interface size and control background), and the places it leads to (language, remote control and About Cue). **Settings** shows each setting at work as you point at it, a small picture on top (beside the rows in a short window); the **i** in its header hides the pictures for a shorter panel. Four sizes are available: small, medium, large, and larger; medium is the fresh-install default. Each is a quarter step from the next, and every step stays visibly different at any window or screen. **Ctrl +** / **Ctrl −** (or Ctrl and the mouse wheel) step through them from anywhere, and **Ctrl 0** goes back to medium; the size's name shows for a moment. Sizes adapt to window width and DPI, with a stacked layout for vertical video. Video and subtitle size are independent of UI size. Drag the bar by its background to move it: bottom centre, top centre, the bottom corners, or anywhere you let it go. Without background, drag it from an empty place between its buttons (a click there still pauses). Hold **Shift** while dragging and the bar keeps its centre on the middle of the window: it moves only up and down and lands centred. In a narrow window it can only be centred, so it never lands in a corner that only shows once the window is widened.
+The **…** menu is grouped in four parts: the file (open, close), ambient lighting, appearance (interface size and control background), and the places it leads to (language, remote control and About Cue). **Settings** shows each setting at work as you point at it, a small picture on top (beside the rows in a short window); the **i** in its header hides the pictures for a shorter panel. Its rows are the film's (or the song's) settings, then **interface**, which names the size and the control background in use and opens them a step deeper (with the same picture, showing a size or the background as you point at it), then language and About Cue. Four sizes are available: small, medium, large, and larger; medium is the fresh-install default. Each is a quarter step from the next, and every step stays visibly different at any window or screen. **Ctrl +** / **Ctrl −** (or Ctrl and the mouse wheel) step through them from anywhere, and **Ctrl 0** goes back to medium; the size's name shows for a moment. Sizes adapt to window width and DPI, with a stacked layout for vertical video. Video and subtitle size are independent of UI size. Drag the bar by its background to move it: bottom centre, top centre, the bottom corners, or anywhere you let it go. Without background, drag it from an empty place between its buttons (a click there still pauses). Hold **Shift** while dragging and the bar keeps its centre on the middle of the window: it moves only up and down and lands centred. In a narrow window it can only be centred, so it never lands in a corner that only shows once the window is widened.
 
 Ambient lighting follows scene colors and fades in after playback starts. It is hidden on the home screen and in fullscreen or maximized mode.
 
@@ -93,8 +112,8 @@ The first time, Windows may ask whether Cue can use the network: allow it on **p
 | On the phone | Does |
 |---|---|
 | Turn the wheel | Time: move through the film; faster turns take bigger steps (5 s, 15 s, 1 min). Volume: set the level. Up next: walk the queue. Cue acts when the finger lifts |
-| Center button | Switch the wheel's mode: time, volume and, while a queue exists, up next. Small dots under the icon show the mode. In menus and folders, confirm |
-| « / » | 15 seconds back / forward (in up next mode: previous / next file). Hold « for ten seconds back with subtitles shown for that moment |
+| Center button | Switch the wheel's mode: time, volume and, while a queue of films exists, up next. The icon names the mode (a note for music or a film for a video in time mode, a speaker for volume, a list for up next), with small dots under it. In menus and folders, confirm |
+| « / » | 15 seconds back / forward (in up next mode, and for music in a queue: previous / next file; in volume mode: volume down / up, 5% a press). Hold « for ten seconds back with subtitles shown for that moment |
 | ▶❚❚ or double-tap the eyes | Play / pause; resuming steps back 3 seconds |
 | menu | Subtitles (on/off, timing, size, position), audio track, sleep timer |
 | Folder button | Browse the shared folders and open a file on the computer |
@@ -123,6 +142,7 @@ What plays shows in Windows' own media card: on the lock screen and in the flyou
 - Backup: `state.json.bak`; corrupted state is preserved as `.corrupt`.
 - Saved frames: the Windows Pictures folder, directly under `Cue` (for example `Pictures\Cue\Show S01E02_00-12-34.png`). Frames saved by earlier versions in `Cue\Frames` stay where they are.
 - Shader cache: `%APPDATA%\tinypeep\Cue\shader-cache`.
+- The home's pictures of films (the frame where each was left): `%APPDATA%\tinypeep\Cue\thumbs`, small JPEGs (160 × 90 at most) named by a hash of the file's path, one per recent entry, made by Cue's preview helper on the home, never while something plays. They go with the entry, and all of them with **clear recent**.
 
 Before 1.3 this folder was `%APPDATA%\tinyoffice\Cue` (and, earlier still, `tinyoffice\Player`): Cue moves it to `tinypeep\Cue` once, at its first start, in one step, keeping everything inside. If something holds a file there at that moment, Cue keeps using the old folder and moves it at the next start. The internal names Windows knows Cue by (file associations, the single-window handoff) stay as they were, so the default player choice and updates are untouched.
 
@@ -136,7 +156,7 @@ About Cue includes credits, a row of contact icons (LinkedIn, GitHub and e-mail;
 
 ### Remote security
 
-The pairing code works once and expires after two minutes; a waiting pairing screen refreshes it. Six wrong attempts in a minute lock pairing for one minute. Turning the remote off revokes all remembered phones. This update requires existing phones to pair again once.
+The pairing code works once and expires after two minutes; a waiting pairing screen refreshes it. Six wrong attempts in a minute lock pairing for one minute. Turning the remote off revokes all remembered phones. Since 1.4 a paired phone never sends its credential again: it answers a new challenge on every connection, and each of its requests is signed and accepted once. The credentials are kept sealed for your Windows account (DPAPI). Phones paired with an earlier version stay paired; a remote page left open on the phone reloads itself once.
 
 The remote uses HTTP on private IPv4 networks. Pairing controls access; it does **not** encrypt traffic. Use a trusted home network. Cue does not request router port forwarding. Only explicitly enabled, local-drive folders can be browsed; UNC paths and junctions/symlinks below those folders are refused.
 
@@ -199,12 +219,14 @@ A focused handle supports Ctrl+Up/Down. **clear queue** empties the list at once
 rows leaving top to bottom; the computer's confirmation follows. Motion respects
 reduced motion.
 
-While a queue exists, the wheel has a third mode, **up next**: tap the center
-until the third dot lights. « and » go to the previous and next file; turning the
+While a queue exists and a film plays, the wheel has a third mode, **up next**: tap the center
+until the third dot lights. « and » go to the previous and next file (the same ones as N and P on
+the computer, shuffle included); turning the
 wheel walks the queue with a card showing the position, name and preview, and
 lifting the finger plays the chosen file. In this mode the end-of-episode card and
 its check button do not appear, since » already goes to the next file. Opening
-and closing the sheet crossfade with the remote underneath. While music plays, the
+and closing the sheet crossfade with the remote underneath. Music has no up next mode: its « and
+» already step songs, and the whole list is in the sheet. While music plays, the
 end-of-file card never covers the face, and turning the wheel in time mode shows only
 the time (the face steps back meanwhile): an audio file has no picture to preview.
 The wheel's time steps follow the file's length (about 5 / 15 / 60 seconds for an

@@ -614,10 +614,7 @@ struct Ui {
 };
 Ui* g = nullptr;
 
-double scale_for(UINT dpi) {
-  double s = std::floor(dpi * 2.0 / 96.0 + 0.25);
-  return std::clamp(s, 2.0, 8.0);
-}
+double scale_for(UINT dpi) { return setup_scale(dpi); }
 
 void start_work() {
   g->view.desktop = g->job.desktop = g->view.desktop;
@@ -948,7 +945,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (silent) {
     code = run_silent();
   } else {
-    // the window: 312 x 184 px of art, at the monitor's whole scale
+    // the window: its art size (SetupView::art_w() x kH) at the installer's pixel for this monitor
     POINT cp;
     GetCursorPos(&cp);
     HMONITOR mon = MonitorFromPoint(cp, MONITOR_DEFAULTTOPRIMARY);

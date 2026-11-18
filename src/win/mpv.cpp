@@ -1,7 +1,9 @@
 #include "mpv.h"
 
-#include <cstring>
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 
 #include "../core/i18n.h"
 #include "../core/json.h"
@@ -40,6 +42,7 @@ bool Mpv::load(const std::wstring& dir, std::string* err) {
   if (!ok) { if (err) *err = i18n::key_name(str::engine_too_old); FreeLibrary(dll_); dll_ = nullptr; api_ = MpvApi{}; return false; }
   sym(dll_, "mpv_command_ret", api_.command_ret);  // optional
   sym(dll_, "mpv_request_log_messages", api_.request_log_messages);  // optional
+  sym(dll_, "mpv_unobserve_property", api_.unobserve_property);  // optional
   // every symbol above exists since client API 1.100 (mpv 0.28); newer options fall back by name
   unsigned long v = api_.client_api_version();
   if (v < ((1ul << 16) | 100)) { if (err) *err = i18n::key_name(str::engine_too_old); FreeLibrary(dll_); dll_ = nullptr; api_ = MpvApi{}; return false; }
@@ -68,7 +71,10 @@ void Mpv::destroy() {
 
 void Mpv::option(const char* k, const std::string& v) { if (h_) api_.set_option_string(h_, k, v.c_str()); }
 
-bool Mpv::set(const char* k, const std::string& v) { return h_ && api_.set_property_string(h_, k, v.c_str()) >= 0; }
+// (19h) how long a call that waits for the engine held the caller (the window's thread): cue.log, with --log
+void mpv_waited(const char* what, const char* name, double ms);
+static double qms() { static LARGE_INTEGER f = [] { LARGE_INTEGER v; QueryPerformanceFrequency(&v); return v; }(); LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart * 1000.0 / f.QuadPart; }
+bool Mpv::set(const char* k, const std::string& v) { double t0 = qms(); bool r = h_ && api_.set_property_string(h_, k, v.c_str()) >= 0; mpv_waited("set", k, qms() - t0); return r; }
 
 void Mpv::set_async(const char* k, const std::string& v) {
   if (!h_) return;
@@ -110,18 +116,22 @@ bool Mpv::cmd_batch(const std::vector<std::vector<std::string>>& commands) {
     text += "no-osd raw";
     for (const auto& arg : command) text += " " + json_quote(arg);
   }
-  return !text.empty() && api_.command_string(h_, text.c_str()) >= 0;
+  double t0 = qms(); bool r = !text.empty() && api_.command_string(h_, text.c_str()) >= 0; mpv_waited("batch", text.substr(0, 60).c_str(), qms() - t0); return r;
 }
 
 double Mpv::get_double(const char* k, double def) {
   double v = def;
+  double t0 = qms();
   if (!h_ || api_.get_property(h_, k, MPV_FORMAT_DOUBLE, &v) < 0) return def;
+  mpv_waited("get", k, qms() - t0);
   return v;
 }
 
 std::string Mpv::get_string(const char* k) {
   if (!h_) return "";
+  double t0 = qms();
   char* s = api_.get_property_string(h_, k);
+  mpv_waited("get", k, qms() - t0);
   if (!s) return "";
   std::string r = s;
   api_.free(s);
@@ -129,6 +139,7 @@ std::string Mpv::get_string(const char* k) {
 }
 
 void Mpv::observe(const char* k, mpv_format f, uint64_t id) { if (h_) api_.observe_property(h_, id, k, f); }
+bool Mpv::unobserve(uint64_t id) { return h_ && api_.unobserve_property && api_.unobserve_property(h_, id) >= 0; }
 
 static const mpv_node* node_get(const mpv_node* m, const char* key) {
   if (!m || m->format != MPV_FORMAT_NODE_MAP || !m->u.list) return nullptr;
@@ -145,6 +156,32 @@ static int64_t node_int(const mpv_node* n) {
   return 0;
 }
 
+std::vector<Chapter> Mpv::parse_chapters(const mpv_node* n) {
+  std::vector<Chapter> list;
+  if (n && n->format == MPV_FORMAT_NODE_ARRAY && n->u.list)
+    for (int i = 0; i < n->u.list->num && list.size() < 1000; ++i) {
+      const mpv_node& c = n->u.list->values[i];
+      if (c.format != MPV_FORMAT_NODE_MAP || !c.u.list) continue;
+      Chapter ch;
+      bool timed = false;
+      for (int k = 0; k < c.u.list->num; ++k) {
+        const char* key = c.u.list->keys[k];
+        const mpv_node& v = c.u.list->values[k];
+        if (!key) continue;
+        if (!std::strcmp(key, "time") && v.format == MPV_FORMAT_DOUBLE && std::isfinite(v.u.double_)) { ch.t = std::max(0.0, v.u.double_); timed = true; }
+        if (!std::strcmp(key, "title") && v.format == MPV_FORMAT_STRING && v.u.string) ch.title = v.u.string;
+      }
+      if (ch.title.size() > 200) {  // (cut between characters, never inside one)
+        size_t cut = 200;
+        while (cut > 0 && ((unsigned char)ch.title[cut] & 0xC0) == 0x80) --cut;
+        ch.title.resize(cut);
+      }
+      if (timed) list.push_back(std::move(ch));
+    }
+  std::stable_sort(list.begin(), list.end(), [](const Chapter& a, const Chapter& b) { return a.t < b.t; });
+  return list;
+}
+
 std::vector<Track> Mpv::parse_tracks(const mpv_node* n) {
   std::vector<Track> out;
   if (!n || n->format != MPV_FORMAT_NODE_ARRAY || !n->u.list) return out;
@@ -158,6 +195,7 @@ std::vector<Track> Mpv::parse_tracks(const mpv_node* n) {
     tr.codec = node_str(node_get(t, "codec"));
     tr.selected = node_flag(node_get(t, "selected"));
     tr.external = node_flag(node_get(t, "external"));
+    if (tr.external) tr.external_file = node_str(node_get(t, "external-filename"));
     tr.forced = node_flag(node_get(t, "forced"));
     tr.is_default = node_flag(node_get(t, "default"));
     tr.albumart = node_flag(node_get(t, "albumart"));

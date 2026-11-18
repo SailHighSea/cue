@@ -1,6 +1,7 @@
 // The installer's face: one small window in the Omni language (dark, pixel type, the eyes).
 // Portable (drawn into a Canvas), so it can be previewed as PNG on any OS.
 #pragma once
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -12,9 +13,18 @@ enum class SetupMode { Install, Upgrade, Update, Uninstall };
 enum class SetupStage { Ask, Working, Done, Failed };
 enum class SetupAct { None, Primary, Secondary, ToggleDesktop, ToggleLaunch, ToggleKeep, ChangeDir, Min, Close };
 
+// The installer's pixel: always a whole one, so every stroke is the same width: 2 px per art px at
+// 100% and 125%, 3 at 150% and 175%, 4 at 200%, 5 at 250%. Its art is compact (356 x 208): 712 x 416
+// at 100%, 1068 x 624 at 175% (a half step there, 3.5, made it nearly as large as before 1.4).
+inline double setup_scale(unsigned dpi) {
+  if (dpi < 48) dpi = 96;
+  double s = std::floor(dpi / 48.0);
+  return s < 2 ? 2 : s > 8 ? 8 : s;
+}
+
 struct SetupView {
-  static constexpr int kBaseW = 392, kH = 236;  // art px
-  // The window is 392 px of art wide, wider only when the current language's words need it
+  static constexpr int kBaseW = 356, kH = 208;  // art px
+  // The window is 356 px of art wide, wider only when the current language's words need it
   // (the eyes' panel keeps its size; the content column grows). Fixed for the whole run.
   static int art_w();
   int w = 0, h = 0;

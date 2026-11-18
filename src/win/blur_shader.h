@@ -131,6 +131,9 @@ inline constexpr const char* kBlurCloudShader = R"CUE(
 //!PARAM bg_k
 //!TYPE DYNAMIC float
 0
+//!PARAM bg_sx
+//!TYPE DYNAMIC float
+1
 //!PARAM wing_on
 //!TYPE DYNAMIC float
 0
@@ -405,8 +408,10 @@ vec4 hook() {
     float h = bg_hw * sz.x;
     vec2 q = HOOKED_pos * sz - c;
     if (max(abs(q.x), abs(q.y)) < h - 1.0) return o;
-    // distance from a rounded square inside the cover, in half-sides of the cover
-    float d = length(max(abs(q) - vec2(h * 0.55), 0.0)) / h;
+    // distance from a rounded square inside the cover, in half-sides of the cover (to the right,
+    // bg_sx times longer: the strip's thumbnail lights the whole width of its window)
+    vec2 qd = vec2(q.x > 0.0 ? q.x / max(bg_sx, 1.0) : q.x, q.y);
+    float d = length(max(abs(qd) - vec2(h * 0.55), 0.0)) / h;
     float u = fract(atan(q.y, q.x) / 6.2831853 + 0.5) * 8.0;
     int i = int(floor(u));
     vec3 col = mix(bg_p(i), bg_p(i == 7 ? 0 : i + 1), smoothstep(0.0, 1.0, u - floor(u)));
@@ -745,7 +750,11 @@ vec4 hook() {
         return HOOKED_tex(HOOKED_pos);
     }
     vec2 cell = max(cue_px, 1.0) * HOOKED_pt;
-    vec2 p = cue_px > 1.0 ? (floor(HOOKED_pos / cell) + 0.5) * cell : HOOKED_pos;
+    // each block takes the colour of the middle of what is seen of it: the last block at the right
+    // and at the foot, cut by the picture's edge, used to take its colour from beyond it (clamped to
+    // the outermost pixel, the darkest of the room), and showed as a black band in big blocks
+    vec2 lo = floor(HOOKED_pos / cell) * cell;
+    vec2 p = cue_px > 1.0 ? 0.5 * (lo + min(lo + cell, vec2(1.0))) : HOOKED_pos;
     vec4 c = HOOKED_tex(clamp(p, HOOKED_pt * .5, vec2(1.0) - HOOKED_pt * .5));
     float m = 1.0;
     if (cue_ar < 9.0 || cue_br > 0.0) {

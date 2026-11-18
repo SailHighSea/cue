@@ -19,8 +19,8 @@ const server=http.createServer((req,res)=>{
   await page.addInitScript(()=>{
    localStorage.setItem('cue.token.v2','a'.repeat(64));window.__sockets=[];
    window.WebSocket=class{
-    constructor(){this.readyState=0;this.bufferedAmount=0;window.__sockets.push(this);setTimeout(()=>{this.readyState=1;this.onopen?.();},5);}
-    send(s){const m=JSON.parse(s);if(m.t==='auth')setTimeout(()=>this.onmessage?.({data:'{"t":"hello","pc":"test"}'}),5);if(m.t==='ping')this.onmessage?.({data:'{"t":"pong"}'});}
+    constructor(){this.readyState=0;this.bufferedAmount=0;window.__sockets.push(this);setTimeout(()=>{this.readyState=1;this.onopen?.();this.onmessage?.({data:'{"t":"chal","n":"0123456789abcdef0123456789abcdef"}'});},5);}
+    send(s){const m=JSON.parse(s);if(m.t==='auth')setTimeout(()=>this.onmessage?.({data:'{"t":"hello","pc":"test","sid":"a1b2c3d4e5f60718"}'}),5);if(m.t==='ping')this.onmessage?.({data:'{"t":"pong"}'});}
     close(){this.readyState=3;}
    };
   });

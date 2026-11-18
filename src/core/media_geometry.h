@@ -13,6 +13,17 @@ struct VideoShape {
   }
 };
 
+// A film's shape from what its file says, before its first picture: the demuxer's size, its
+// pixels' shape (anamorphic films) and how it is turned. The engine lists "demux-rotation" only
+// for a turned film (a phone video): when it says nothing, the film is not turned. (1.4 waited
+// for the rotation to be said, so a plain film never got its window before its first picture.)
+inline VideoShape demux_shape(int width, int height, double par, int rotation) {
+  if (width <= 0 || height <= 0) return {};
+  const double w = width * (par > 0 && par < 100 ? par : 1.0);
+  if (!(w >= 1)) return {};
+  return {(int64_t)(w + 0.5), height, rotation > 0 ? rotation : 0};
+}
+
 // A single reply owns the complete width/height/rotation tuple for this load.
 // Unchanged dimensions need not generate observer events between two files.
 class MediaGeometry {

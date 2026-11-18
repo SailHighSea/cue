@@ -10,6 +10,15 @@
 #include "../core/version.h"
 #include "platform.h"
 
+#if CUE_STORE_BUILD
+// The Microsoft Store edition: the Store installs and updates Cue, so this file compiles to
+// nothing that touches the network, downloads a file or starts an installer.
+void update_check_async(HWND, UINT, bool) {}
+void update_download_async(HWND, UINT, const ReleaseInfo&) {}
+bool update_launch_installer(const std::wstring&, const std::wstring&) { return false; }
+void update_cleanup_async() {}
+#else
+
 namespace {
 struct Url { std::wstring host, path; INTERNET_PORT port = INTERNET_DEFAULT_HTTPS_PORT; bool https = true; };
 
@@ -28,12 +37,15 @@ bool crack(const std::wstring& url, Url& out) {
   return out.https;  // never plain http
 }
 
-// One GET. Follows GitHub's redirect to its download host (https only). `sink` receives the
-// body in chunks; `total` gets Content-Length when known.
+// One GET, from GitHub only. GitHub answers a release file with a redirect to its download
+// host; redirects are followed here, one at a time (at most five), and only to an https address
+// on a host update_host_allowed() knows: a release, or an answer, that points anywhere else is
+// not followed. `sink` receives the body in chunks; `total` gets Content-Length when known.
 template <class Sink>
 bool http_get(const std::wstring& url, const wchar_t* accept, Sink sink, std::string& err, int64_t* total = nullptr) {
   Url u;
   if (!crack(url, u)) { err = "bad url"; return false; }
+  if (!update_host_allowed(narrow(u.host))) { err = "host not allowed"; return false; }
   std::wstring agent = L"Cue/" + widen(CUE_VERSION) + L" (Windows; +https://github.com/" + widen(CUE_UPDATE_REPO) + L")";
   HINTERNET ses = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                               WINHTTP_NO_PROXY_BYPASS, 0);
@@ -41,40 +53,63 @@ bool http_get(const std::wstring& url, const wchar_t* accept, Sink sink, std::st
                               WINHTTP_NO_PROXY_BYPASS, 0);  // before Windows 8.1
   if (!ses) { err = "open"; return false; }
   WinHttpSetTimeouts(ses, 8000, 8000, 15000, 30000);
-  DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+  DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
   WinHttpSetOption(ses, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof redirect);
   bool ok = false;
-  HINTERNET con = WinHttpConnect(ses, u.host.c_str(), u.port, 0);
-  HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                           WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
-                      : nullptr;
-  if (req) {
-    std::wstring headers = std::wstring(L"Accept: ") + accept + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
-    if (WinHttpSendRequest(req, headers.c_str(), (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-        WinHttpReceiveResponse(req, nullptr)) {
-      DWORD status = 0, len = sizeof status;
-      WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
-                          &status, &len, WINHTTP_NO_HEADER_INDEX);
-      if (status == 200) {
-        if (total) {
-          wchar_t cl[32] = {};
-          DWORD cll = sizeof cl;
-          *total = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, cl, &cll,
-                                       WINHTTP_NO_HEADER_INDEX) ? _wtoi64(cl) : 0;
-        }
-        std::vector<char> buf(64 * 1024);
-        ok = true;
-        for (;;) {
-          DWORD got = 0;
-          if (!WinHttpReadData(req, buf.data(), (DWORD)buf.size(), &got)) { ok = false; err = "read"; break; }
-          if (got == 0) break;
-          if (!sink(buf.data(), got)) { ok = false; err = "sink"; break; }
-        }
-      } else err = "http " + std::to_string(status);
-    } else err = "send " + std::to_string(GetLastError());
-  } else err = "request";
-  if (req) WinHttpCloseHandle(req);
-  if (con) WinHttpCloseHandle(con);
+  for (int hop = 0; hop < 6; ++hop) {
+    HINTERNET con = WinHttpConnect(ses, u.host.c_str(), u.port, 0);
+    HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", u.path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
+                        : nullptr;
+    bool follow = false;
+    if (req) {
+      std::wstring headers = std::wstring(L"Accept: ") + accept + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
+      if (WinHttpSendRequest(req, headers.c_str(), (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+          WinHttpReceiveResponse(req, nullptr)) {
+        DWORD status = 0, len = sizeof status;
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                            &status, &len, WINHTTP_NO_HEADER_INDEX);
+        if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+          // the Location header is text: asked for as text (a number flag would make the read fail)
+          DWORD size = 0;
+          WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, WINHTTP_NO_OUTPUT_BUFFER, &size,
+                              WINHTTP_NO_HEADER_INDEX);
+          std::wstring location;
+          if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && size > 0 && size < 16 * 1024) {
+            location.resize(size / sizeof(wchar_t) + 1);
+            if (WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location.data(), &size,
+                                    WINHTTP_NO_HEADER_INDEX))
+              location.resize(size / sizeof(wchar_t));
+            else location.clear();
+          }
+          Url next;
+          if (location.empty()) err = "redirect without a location";
+          else if (!crack(location, next)) err = "redirect not https";
+          else if (!update_host_allowed(narrow(next.host))) err = "redirect to a host not allowed";
+          else { u = next; follow = true; }
+        } else if (status == 200) {
+          if (total) {
+            wchar_t cl[32] = {};
+            DWORD cll = sizeof cl;
+            *total = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, cl, &cll,
+                                         WINHTTP_NO_HEADER_INDEX) ? _wtoi64(cl) : 0;
+          }
+          std::vector<char> buf(64 * 1024);
+          ok = true;
+          for (;;) {
+            DWORD got = 0;
+            if (!WinHttpReadData(req, buf.data(), (DWORD)buf.size(), &got)) { ok = false; err = "read"; break; }
+            if (got == 0) break;
+            if (!sink(buf.data(), got)) { ok = false; err = "sink"; break; }
+          }
+        } else err = "http " + std::to_string(status);
+      } else err = "send " + std::to_string(GetLastError());
+    } else err = "request";
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    if (!follow) break;
+    if (hop == 5) err = "too many redirects";
+  }
   WinHttpCloseHandle(ses);
   return ok;
 }
@@ -286,3 +321,4 @@ void update_cleanup_async() {
     CloseHandle(worker);
   }
 }
+#endif  // CUE_STORE_BUILD

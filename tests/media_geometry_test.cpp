@@ -46,6 +46,21 @@ int main() {
     const size_t early = s.find("decide_window();", s.find("early_shape_.width > 0", loaded));
     assert(loaded != std::string::npos && early != std::string::npos && early < s.find("\n}\n", loaded));
     assert(s.find("if(geom_done_ && previous>0 && std::fabs(previous-shape.aspect())<=previous*0.004) return;") != std::string::npos);
+    // (1.4 asked for the rotation to be said, which the engine does only for a turned film:
+    // a plain film never took its shape before its first picture)
+    assert(s.find("early_shape_ = demux_shape(vw, vh, t.demux_par, t.demux_rotation);") != std::string::npos);
+    assert(s.find("t.demux_rotation >= 0") == std::string::npos);
+  }
+  // the engine leaves "demux-rotation" out for a film that is not turned (-1 here): not turned
+  {
+    const VideoShape plain = demux_shape(1920, 1080, 1.0, -1);
+    assert(plain.valid() && plain.width == 1920 && plain.height == 1080 && plain.rotation == 0);
+    assert(std::abs(demux_shape(1280, 536, 0, -1).aspect() - 1280.0 / 536) < 1e-9);  // (no pixel shape said: square)
+    assert(demux_shape(720, 576, 64.0 / 45, -1).width == 1024);                       // anamorphic PAL 16:9
+    assert(std::abs(demux_shape(1920, 1080, 1, 90).aspect() - 9.0 / 16) < 1e-9);       // a phone video, turned
+    assert(demux_shape(1920, 1080, 1, 270).rotation == 270);
+    assert(!demux_shape(0, 1080, 1, -1).valid() && !demux_shape(1920, 0, 1, 0).valid() && !demux_shape(-5, 4, 1, 0).valid());
+    assert(demux_shape(1920, 1080, std::nan(""), -1).width == 1920);                  // nonsense pixel shape: square
   }
   puts("Media geometry: complete per-file dimensions, unchanged width/height, repeated formats, portrait/square/rotation, stale reply rejection and the shape at load passed");
 }

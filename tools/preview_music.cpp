@@ -6,6 +6,7 @@
 // Build (from the repository root):
 //   g++ -std=c++20 -O1 -o build/preview_music tools/preview_music.cpp src/ui/*.cpp src/core/*.cpp
 //   ./build/preview_music out [dpi]
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -111,23 +112,42 @@ static Canvas compose(PlayView& pv, const Canvas& base) {
 }
 
 int main(int argc, char** argv) {
-  i18n::set_language(i18n::Lang::PtBR);
+  // CUE_LANG (0..7, i18n::Lang's order) and CUE_SIZE (0..3, the interface's four sizes): the same
+  // windows in another language or size
+  const char* env_lang = std::getenv("CUE_LANG");
+  const char* env_size = std::getenv("CUE_SIZE");
+  i18n::set_language(env_lang ? (i18n::Lang)std::clamp(std::atoi(env_lang), 0, i18n::kLangCount - 1) : i18n::Lang::PtBR);
+  const int ui_size = env_size ? ui_size_choice(std::atoi(env_size)) : kDefaultUiSize;
   std::string out = argc > 1 ? argv[1] : "out";
   const unsigned dpi = argc > 2 ? (unsigned)std::atoi(argv[2]) : 144;
   const bool tint = argc > 3 && std::atoi(argv[3]) != 0;
   const bool free_bar = argc > 4 && std::atoi(argv[4]) != 0;  // the bar without its background
   struct Win { const char* name; int w, h; };
   // physical px at 150%: the roomy window, a short wide strip, a wider strip, a small one, tall
+  // CUE_WINS=1: the windows of the large sizes' report (16/11), in px at 100%, grown to the dpi
+  Win biel[] = {{"b960", 960, 540}, {"b1072", 1072, 603}, {"b1280", 1280, 720}, {"b1440", 1440, 810}, {"b900x700", 900, 700}, {"b1100x900", 1100, 900}};
+  for (Win& b : biel) { b.w = b.w * (int)dpi / 96; b.h = b.h * (int)dpi / 96; }
+  const bool only_biel = std::getenv("CUE_WINS") != nullptr;
   const Win wins[] = {{"roomy", 2160, 1215}, {"strip", 2340, 520}, {"band", 2100, 680}, {"wide", 2400, 900},
                       {"small", 960, 620}, {"tall", 900, 1300}, {"tiny", 760, 300},
                       // the reports' windows (physical px at 150%)
-                      {"report-wide", 1910, 1370}, {"report-small", 1180, 1060}, {"report-narrow", 650, 1530}, {"report-square", 1790, 1620}};
-  for (const Win& win : wins) {
+                      {"report-wide", 1910, 1370}, {"report-small", 1180, 1060}, {"report-narrow", 650, 1530}, {"report-square", 1790, 1620},
+                      // the rascunho's small windows (14/11): Compacto, Micro, the strip
+                      {"compacto", 720, 780}, {"micro", 390, 390}, {"faixa", 1000, 150},
+                      // the smallest a song's window gets (220 x 220 and 460 x 96 px at 100%), and Micro at its largest
+                      {"faixa-biel", 800, 168}, {"largo-biel", 915, 252}, {"micro-min", 330, 330}, {"micro-max", 448, 448}, {"faixa-min", 690, 144},
+                      // Micro at rest (no pointer: the equalizer and the progress line)
+                      {"micro-rest", 390, 390}};
+  std::vector<Win> list;
+  if (only_biel) list.assign(std::begin(biel), std::end(biel)); else list.assign(std::begin(wins), std::end(wins));
+  for (const Win& win : list) {
     const int cw = win.w, ch = win.h;
-    const double s = ui_scale(dpi, cw, ch, kDefaultUiSize);
-    MusicFrame fr = music_frame_for(cw, ch, s);
+    const double s = ui_scale(dpi, cw, ch, ui_size);
+    MusicFrame fr = music_frame_for(cw, ch, music_frame_scale(dpi, cw, ch, ui_size), MusicFrame::Card, dpi / 96.0);  // (App)
     double ps = s;  // (music keeps the screen's size: App::play_scale)
-    if (music_frame_stacked(fr)) ps = std::max(ps, music_compact_scale(s, cw, ch, kDefaultUiSize, ui_base_scale(dpi, kDefaultUiSize)));
+    if (music_frame_stacked(fr)) ps = std::max(ps, music_compact_scale(s, cw, ch, ui_size, ui_base_scale(dpi, ui_size)));
+    if (fr == MusicFrame::Micro || fr == MusicFrame::Strip) ps = std::max(ps, music_small_scale(dpi, cw, ch, ui_size, fr == MusicFrame::Strip));  // (App::play_scale)
+    if (fr == MusicFrame::Scene) ps = std::max(ps, music_wide_scale(dpi, cw, ch, ui_size));
     PlayView pv;
     pv.in.audio_only = true; pv.in.cover_scene = true; pv.in.cover_art = true; pv.in.has_cover = true;
     pv.in.controls_free = free_bar;
@@ -146,7 +166,9 @@ int main(int argc, char** argv) {
     double now = 1;
     pv.reset(now);
     pv.changed(now);
-    pv.set_hover_for_preview(cw / 2, ch - 20, now);
+    const bool rest = std::string(win.name) == "micro-rest";
+    if (rest) { pv.in.music_level = 0.8; pv.in.music_level_t = 1.3; }
+    else pv.set_hover_for_preview(cw / 2, ch - 20, now);
     // two passes, like App: the framing needs the bar's place, the bar's layout the framing
     MusicView v;
     for (int pass = 0; pass < 3; ++pass) {
@@ -154,18 +176,25 @@ int main(int argc, char** argv) {
       int top = ch;
       Rect d = pv.blur_cloud().controls;
       if (d.h > 0 && d.cy() > ch / 2) top = d.y;
-      if (fr == MusicFrame::Centre) v = music_view(pv.in.music_scene, fr, cw, ch, top, pv.music_centre_below(), pv.music_stack_above(), -1, pv.music_list_beside());
+      if (Rect cc = pv.card_cover(); pv.music_card_mode() > 0 && cc.w > 0) {  // the small windows' cards (App::music_view_target)
+        v = MusicView{}; v.frame = fr; v.f = cc.w / (double)pv.in.music_scene.side;
+        v.ox = cc.x - pv.in.music_scene.x * v.f; v.oy = cc.y - pv.in.music_scene.y * v.f;
+      } else if (fr == MusicFrame::Centre) v = music_view(pv.in.music_scene, fr, cw, ch, top, pv.music_centre_below(), pv.music_stack_above(), -1, pv.music_list_beside());
       else if (fr != MusicFrame::Scene && pv.music_stacked()) v = music_view(pv.in.music_scene, fr, cw, ch, top, pv.music_stack_below(), pv.music_stack_above());
       else v = music_view(pv.in.music_scene, fr, cw, ch, top, -1, 0, pv.music_words_w());
+      v.frame = fr;
       pv.in.music_view = v;
       pv.changed(now);
     }
-    run(pv, now, 0.7);
+    run(pv, now, rest ? 6.0 : 0.7);  // (at rest: the controls have gone)
+    g_no_wings = pv.music_card_mode() > 0 && !pv.music_card_wings();  // (the wings step out, as in the mini player)
     std::printf("%s %dx%d s=%.1f ps=%.1f frame=%d f=%.3f ox=%.0f oy=%.0f\n", win.name, cw, ch, s, ps, (int)fr, v.f, v.ox, v.oy);
     const Rgb room{150, 152, 168};
     const Rgb bgc = tint ? music_backdrop(room, 1.0) : Rgb{0, 0, 0};
     Canvas base = scene(pv.in.music_scene, v, cw, ch, room, bgc, tint);
+    g_no_wings = false;
     save_canvas(compose(pv, base), out + "/music-" + win.name + ".png");
+    if (pv.music_card_mode() > 0) continue;  // (the small windows' cards: no list of their own here)
     pv.open_panel_for_preview(10, now);
     for (int pass = 0; pass < 3; ++pass) {  // the composition makes room for the list (App's glide, landed)
       run(pv, now, 0.3);

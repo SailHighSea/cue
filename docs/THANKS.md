@@ -16,6 +16,12 @@ Cue is made by Gabriel Benzoni at .tinypeep. These people helped make it better.
   start an uninstall, several audio tracks played at once are remembered, and Windows' media card
   keeps the right play / pause state.
 
+- **omni38** (GitHub: https://github.com/omnizs38): a security proposal for the phone remote,
+  in pull request #20. Since 1.4 a phone proves it is paired by answering a challenge instead
+  of sending its credential, its requests are signed so they cannot be replayed, the credentials
+  are sealed on the PC with DPAPI, and updates are fetched only from GitHub's own hosts. The
+  idea and much of the design are theirs; the review is in SECURITY.md.
+
 ## Testing and feedback
 
 - **DetroNot74** (GitHub: https://github.com/DetroNot74): careful bug reports with

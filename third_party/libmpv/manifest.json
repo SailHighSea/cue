@@ -6,7 +6,7 @@
   "license": "LGPL-3.0-or-later for combined distribution; individual notices retained",
   "mpv_revision": "ad5877edabdb05c0c62aad444722938d37666e2d",
   "ffmpeg_revision": "215351c",
-  "source_package": "Cue-1.3.2-Engine-Source.zip",
+  "source_package": "Cue-1.4-Engine-Source.zip",
   "source_components": 16,
   "compiler": "x86_64-w64-mingw32-gcc (GCC) 13-posix",
   "system_dll_imports": [
@@ -61,5 +61,5 @@
   "source_package_sha256": "6ce73f8f9b7209e390f45c16f6ec0fbdfab383eddb7a7726656f1f24b4fcb13e",
   "original_source_package_binary_sha256": "26fa28434e30aa319a8ab39fba76dbc4a84757b89349c1fc69b5e55ea6c02bca",
   "source_package_provenance": "Original supplied engine source ZIP retained byte-for-byte; all 16 source archives verified against sources.json.",
-  "binary_manifest_note": "The original binary-manifest.json inside the source ZIP records a different DLL hash. This manifest records the DLL actually supplied with Cue 1.3.2; no bit-for-bit engine rebuild comparison was performed."
+  "binary_manifest_note": "The original binary-manifest.json inside the source ZIP records a different DLL hash. This manifest records the DLL actually supplied with Cue (unchanged since 1.0, shipped again in 1.4); no bit-for-bit engine rebuild comparison was performed."
 }

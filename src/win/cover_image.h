@@ -31,6 +31,10 @@ struct CoverJob {
   bool lit = false;    // the colours were read
   FrameColors colors;
   std::string bytes;
+  // for Windows' media card: a large cover (megabytes of PNG) made small (a 512 px JPEG) after
+  // `done`, so the card never reads megabytes through the window's thread; "" means use `bytes`
+  std::atomic<bool> card_done{false};
+  std::string card;
 };
 std::shared_ptr<CoverJob> request_cover(const std::string& path);
 
@@ -56,4 +60,7 @@ struct CardStillJob {
 std::shared_ptr<CardStillJob> request_card_still(std::vector<uint32_t> px, int w, int h);
 // The engine's raw screenshot (bgr0, `stride` bytes a row) reduced to at most max_w x max_h,
 // each pixel the average of a 2x2 sample. Quick enough for the UI thread at any film size.
+// BGRA pixels to a JPEG in memory (Windows' own encoder; COM must be initialised on the
+// calling thread), or "" if anything fails.
+std::string encode_jpeg_bgra(const std::vector<uint32_t>& px, int w, int h);
 std::vector<uint32_t> shrink_bgr0(const uint8_t* data, int w, int h, int stride, int max_w, int max_h, int& out_w, int& out_h);

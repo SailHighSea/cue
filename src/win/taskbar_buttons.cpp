@@ -15,8 +15,18 @@ void TaskbarButtons::free_icons() {
   for (HICON& i : icons_) if (i) { DestroyIcon(i); i = nullptr; }
 }
 
-// The dock's own pixel glyphs, white, whole pixels, centred: the same marks at any DPI.
-static HICON glyph_icon(const char* name, int size) {
+// The taskbar's own theme (Settings > Personalisation > Colours > "Windows mode"), not the apps':
+// the previews' buttons sit on its colour. Older Windows without the value: dark.
+static bool taskbar_light() {
+  DWORD v = 0, n = sizeof v;
+  return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &v, &n) == ERROR_SUCCESS && v != 0;
+}
+
+// The dock's own pixel glyphs, whole pixels, centred: the same marks at any DPI. White on a dark
+// taskbar, black on a light one (16/11: white on the light theme's preview could not be seen).
+static HICON glyph_icon(const char* name, int size, bool light) {
+  const uint32_t ink = light ? 0xff000000u : 0xffffffffu;  // (premultiplied: opaque black or white)
   const BitmapDef* b = bmp(name);
   if (!b) return nullptr;
   int k = std::max(1, size / 8);
@@ -27,7 +37,7 @@ static HICON glyph_icon(const char* name, int size) {
     for (int x = 0; x < b->w; ++x)
       if (b->cells[y * b->w + x] == '#')
         for (int yy = 0; yy < k; ++yy)
-          for (int xx = 0; xx < k; ++xx) px[(size_t)(oy + y * k + yy) * size + ox + x * k + xx] = 0xffffffffu;
+          for (int xx = 0; xx < k; ++xx) px[(size_t)(oy + y * k + yy) * size + ox + x * k + xx] = ink;
   BITMAPV5HEADER h{};
   h.bV5Size = sizeof h; h.bV5Width = size; h.bV5Height = -size; h.bV5Planes = 1; h.bV5BitCount = 32;
   h.bV5Compression = BI_BITFIELDS;
@@ -47,11 +57,26 @@ static HICON glyph_icon(const char* name, int size) {
 
 void TaskbarButtons::make_icons() {
   int size = GetSystemMetrics(SM_CXSMICON);
-  if (size == icon_size_ && icons_[0]) return;
+  const bool light = taskbar_light();
+  if (size == icon_size_ && light == light_ && icons_[0]) return;
   free_icons();
   icon_size_ = size;
+  light_ = light;
   const char* names[4] = {"prev-file", "play", "pause", "next-file"};
-  for (int i = 0; i < 4; ++i) icons_[i] = glyph_icon(names[i], size);
+  for (int i = 0; i < 4; ++i) icons_[i] = glyph_icon(names[i], size, light);
+}
+
+void TaskbarButtons::theme_changed() {
+  if (!list_ || !hwnd_ || !added_) return;
+  if (taskbar_light() == light_ && GetSystemMetrics(SM_CXSMICON) == icon_size_) return;
+  // (the buttons keep their handles until the update has been handed over)
+  HICON old[4];
+  std::memcpy(old, icons_, sizeof old);
+  for (HICON& i : icons_) i = nullptr;
+  icon_size_ = 0;
+  make_icons();
+  apply(false);
+  for (HICON i : old) if (i) DestroyIcon(i);
 }
 
 void TaskbarButtons::created(HWND hwnd) {

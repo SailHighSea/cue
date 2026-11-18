@@ -1,8 +1,24 @@
 #include "cover_image.h"
 #include "../core/image_trim.h"
 #include "../core/bounded_worker.h"
+#include "../core/cover_cache.h"
 
 #include <wincodec.h>
+
+// The decoder's own reduced decoding (a JPEG at 1/2, 1/4, 1/8): in the Windows SDK's wincodec.h,
+// missing from MinGW's. The same interface, its methods in the SDK's order.
+#if !defined(__IWICBitmapSourceTransform_INTERFACE_DEFINED__)
+MIDL_INTERFACE("3b16811b-6a43-4ec9-b713-3d5a0c13b940")
+IWICBitmapSourceTransform : public IUnknown {
+ public:
+  virtual HRESULT STDMETHODCALLTYPE CopyPixels(const WICRect* prc, UINT uiWidth, UINT uiHeight, WICPixelFormatGUID* pguidDstFormat,
+                                               WICBitmapTransformOptions dstTransform, UINT nStride, UINT cbBufferSize, BYTE* pbBuffer) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetClosestSize(UINT* puiWidth, UINT* puiHeight) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetClosestPixelFormat(WICPixelFormatGUID* pguidDstFormat) = 0;
+  virtual HRESULT STDMETHODCALLTYPE DoesSupportTransform(WICBitmapTransformOptions dstTransform, BOOL* pfIsSupported) = 0;
+};
+__CRT_UUID_DECL(IWICBitmapSourceTransform, 0x3b16811b, 0x6a43, 0x4ec9, 0xb7, 0x13, 0x3d, 0x5a, 0x0c, 0x13, 0xb9, 0x40)
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -38,6 +54,8 @@ bool decode_image(const std::string& encoded, std::vector<uint32_t>& px, int& w,
   IWICBitmapFrameDecode* frame = nullptr;
   IWICBitmapScaler* scaler = nullptr;
   IWICFormatConverter* conv = nullptr;
+  IWICBitmapSourceTransform* xf = nullptr;
+  IWICBitmap* reduced = nullptr;
   if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
       SUCCEEDED(wic->CreateStream(&stream)) &&
       SUCCEEDED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(data.data()), (DWORD)data.size())) &&
@@ -51,13 +69,45 @@ bool decode_image(const std::string& encoded, std::vector<uint32_t>& px, int& w,
       double k = std::min(1.0, (double)max_side / std::max(fw, fh));
       UINT tw = std::max(1u, (UINT)std::lround(fw * k)), th = std::max(1u, (UINT)std::lround(fh * k));
       IWICBitmapSource* src = frame;
-      const bool needs_scale = (tw != fw || th != fh);
+      bool needs_scale = (tw != fw || th != fh);
       bool scaler_failed = false;
+      // A JPEG (most covers) can be decoded straight at 1/2, 1/4 or 1/8 of its size: a 3000 px
+      // cover read for a 192 px look used to be decoded whole first (tens of ms, and the song's
+      // opening waits for that read). The decoder's own reduction, at least the size wanted, then
+      // the same smooth scaling as before on the much smaller picture. Anything unexpected: the
+      // whole picture, as before.
+      if (needs_scale && SUCCEEDED(frame->QueryInterface(IID_PPV_ARGS(&xf)))) {
+        UINT sw = 0, sh = 0;
+        WICPixelFormatGUID f = GUID_WICPixelFormat32bppBGRA;
+        // (the closest size it can make may fall below the one asked: then a larger one is asked)
+        bool sized = false;
+        for (UINT k = 1; k <= 8 && !sized; k *= 2) {
+          sw = std::min(fw, tw * k); sh = std::min(fh, th * k);
+          sized = SUCCEEDED(xf->GetClosestSize(&sw, &sh)) && sw >= tw && sh >= th;
+        }
+        if (sized && sw < fw && sh < fh &&
+            (uint64_t)sw * sh <= 4096ull * 4096ull && SUCCEEDED(xf->GetClosestPixelFormat(&f))) {
+          const UINT bpp = IsEqualGUID(f, GUID_WICPixelFormat32bppBGRA) || IsEqualGUID(f, GUID_WICPixelFormat32bppBGR) ? 32
+                           : IsEqualGUID(f, GUID_WICPixelFormat24bppBGR) ? 24
+                           : IsEqualGUID(f, GUID_WICPixelFormat8bppGray) ? 8 : 0;
+          if (bpp) {
+            const UINT stride = ((sw * bpp + 7) / 8 + 3) & ~3u;
+            try {
+              std::vector<BYTE> buf((size_t)stride * sh);
+              if (SUCCEEDED(xf->CopyPixels(nullptr, sw, sh, &f, WICBitmapTransformRotate0, stride, (UINT)buf.size(), buf.data())) &&
+                  SUCCEEDED(wic->CreateBitmapFromMemory(sw, sh, f, stride, (UINT)buf.size(), buf.data(), &reduced))) {
+                src = reduced;
+                needs_scale = sw != tw || sh != th;
+              }
+            } catch (...) {}
+          }
+        }
+      }
       if (needs_scale) {
         // Fail closed when scaling is required but unavailable: falling back to the
         // full frame would allocate up to 16384x16384 pixels (~1 GiB) for one crafted cover.
         if (!SUCCEEDED(wic->CreateBitmapScaler(&scaler)) ||
-            !SUCCEEDED(scaler->Initialize(frame, tw, th, WICBitmapInterpolationModeFant)))
+            !SUCCEEDED(scaler->Initialize(src, tw, th, WICBitmapInterpolationModeFant)))
           scaler_failed = true;
         else
           src = scaler;
@@ -75,7 +125,7 @@ bool decode_image(const std::string& encoded, std::vector<uint32_t>& px, int& w,
             px.assign((size_t)tw * th, 0);
           } catch (...) {
             px.clear();
-            for (IUnknown* u : std::initializer_list<IUnknown*>{conv, scaler, frame, dec, stream, wic}) if (u) u->Release();
+            for (IUnknown* u : std::initializer_list<IUnknown*>{conv, scaler, reduced, xf, frame, dec, stream, wic}) if (u) u->Release();
             return false;
           }
           if (SUCCEEDED(conv->CopyPixels(nullptr, tw * 4, (UINT)(px.size() * 4), reinterpret_cast<BYTE*>(px.data())))) {
@@ -85,7 +135,7 @@ bool decode_image(const std::string& encoded, std::vector<uint32_t>& px, int& w,
       }
     }
   }
-  for (IUnknown* u : std::initializer_list<IUnknown*>{conv, scaler, frame, dec, stream, wic}) if (u) u->Release();
+  for (IUnknown* u : std::initializer_list<IUnknown*>{conv, scaler, reduced, xf, frame, dec, stream, wic}) if (u) u->Release();
   return ok;
 }
 
@@ -111,7 +161,8 @@ void half_size(std::vector<uint32_t>& px, int& w, int& h) {
   px.swap(out); w = nw; h = nh;
 }
 
-// the song's identity on disk (name, size, last change): a re-tagged file is read again
+// the song's identity on disk (name, size, last change): a re-tagged file is read again. Asks the
+// disk: only on a worker (see core/cover_cache.h)
 std::string cover_key(const std::string& path) {
   WIN32_FILE_ATTRIBUTE_DATA a{};
   if (!GetFileAttributesExW(widen(path).c_str(), GetFileExInfoStandard, &a)) return {};
@@ -120,8 +171,9 @@ std::string cover_key(const std::string& path) {
 }
 
 std::mutex g_cover_mu;
-std::deque<std::pair<std::string, std::shared_ptr<CoverJob>>> g_covers;  // newest first
-constexpr size_t kCoversKept = 4;
+CoverCache<CoverJob> g_covers;  // by path; identities checked on workers
+constexpr size_t kCoversKept = CoverCache<CoverJob>::kKept;
+double cover_clock() { return (double)GetTickCount64() / 1000.0; }
 // Weak entries reuse work already owned by the player/prefetch without retaining any images.
 struct ArtRequest {
   std::weak_ptr<CoverJob> cover;
@@ -133,6 +185,8 @@ std::deque<ArtRequest> g_art_requests;
 // small colour/crop read. Both sleep when idle; no thread per skip or resize.
 BoundedWorker& cover_reads() { static BoundedWorker worker(4); return worker; }
 BoundedWorker& art_decodes() { static BoundedWorker worker(4); return worker; }
+// the identity checks of covers already read (a disk asleep or gone holds up only these)
+BoundedWorker& cover_checks() { static BoundedWorker worker(4); return worker; }
 template<class Job> auto cancelled(std::weak_ptr<Job> weak) {
   return [weak] { if (auto job = weak.lock()) { job->cancelled = true; job->done.store(true); } };
 }
@@ -142,24 +196,31 @@ template<class Job> auto cancelled(std::weak_ptr<Job> weak) {
 std::shared_ptr<CoverJob> request_cover(const std::string& path) {
   if (path.empty()) return {};
   try {
-    const std::string key = cover_key(path);
+    // (18a, 17/11: no disk here. This runs on the window's thread when a song opens, is skipped
+    // to, or the next one's cover is read ahead; asking the disk for the song's size and date
+    // froze the window for as long as an external disk took to wake, or a dropped share to fail)
     // Lookup and insertion share one lock: concurrent callers cannot start
     // duplicate reads for the same file between the lookup and the cache insertion.
     std::unique_lock<std::mutex> lock(g_cover_mu);
-    if (!key.empty()) {
-      for (size_t i = 0; i < g_covers.size(); ++i)
-        if (g_covers[i].first == key && !(g_covers[i].second->done.load() && g_covers[i].second->cancelled)) {
-          auto job = g_covers[i].second;
-          g_covers.erase(g_covers.begin() + (ptrdiff_t)i);
-          g_covers.emplace_front(key, job);
-          return job;
-        }
+    bool check = false;
+    if (auto kept = g_covers.find(path, cover_clock(), check, [](const CoverJob& j) { return !(j.done.load() && j.cancelled); })) {
+      lock.unlock();
+      if (check) {
+        // (the job is held while it is checked: its address names it in the cache)
+        const CoverJob* id = kept.get();
+        auto unchecked = [id, kept] { std::lock_guard<std::mutex> l(g_cover_mu); g_covers.unchecked(id); };
+        try {
+          cover_checks().submit({[path, id, kept] {
+            const std::string identity = cover_key(path);
+            std::lock_guard<std::mutex> l(g_cover_mu);
+            g_covers.report(id, identity, cover_clock());  // (changed: the next request reads it again)
+          }, unchecked});
+        } catch (...) { unchecked(); }
+      }
+      return kept;
     }
     auto job = std::make_shared<CoverJob>();
-    if (!key.empty()) {
-      g_covers.emplace_front(key, job);
-      while (g_covers.size() > kCoversKept) g_covers.pop_back();
-    }
+    g_covers.add(path, job, cover_clock());
     lock.unlock();
     const std::weak_ptr<CoverJob> weak = job;
     try { cover_reads().submit({[weak, path] {
@@ -168,6 +229,9 @@ std::shared_ptr<CoverJob> request_cover(const std::string& path) {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
       HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
       try {
+        // the identity this read sees (before the read: a change during it is seen next time)
+        const std::string identity = cover_key(path);
+        { std::lock_guard<std::mutex> l(g_cover_mu); g_covers.report(job.get(), identity, cover_clock()); }
         std::vector<uint32_t> px;
         int w = 0, h = 0, fw = 0, fh = 0;
         job->bytes = cover_art::find(path);
@@ -187,10 +251,22 @@ std::shared_ptr<CoverJob> request_cover(const std::string& path) {
           job->lit = job->colors.valid;
         }
       } catch (...) {}
-      if (SUCCEEDED(co)) CoUninitialize();
       job->done.store(true);
-    }, cancelled(weak)}); }
-    catch (...) { job->cancelled = true; job->done.store(true); return {}; }
+      // then, with the song already able to use the rest: the media card's small copy
+      try {
+        if (job->found && job->bytes.size() > (160u << 10)) {
+          std::vector<uint32_t> px;
+          int w = 0, h = 0;
+          if (decode_image(job->bytes, px, w, h, 512) && w > 0 && h > 0) {
+            std::string small = encode_jpeg_bgra(px, w, h);
+            if (!small.empty() && small.size() < job->bytes.size()) job->card = std::move(small);
+          }
+        }
+      } catch (...) {}
+      job->card_done.store(true);
+      if (SUCCEEDED(co)) CoUninitialize();
+    }, [weak] { if (auto job = weak.lock()) { job->cancelled = true; job->done.store(true); job->card_done.store(true); } }}); }
+    catch (...) { job->cancelled = true; job->done.store(true); job->card_done.store(true); return {}; }
     return job;
   } catch (...) { return {}; }
 }
@@ -316,6 +392,11 @@ std::string encode_jpeg(const std::vector<uint32_t>& px, int w, int h) {
   return out;
 }
 }  // namespace
+
+std::string encode_jpeg_bgra(const std::vector<uint32_t>& px, int w, int h) {
+  if (px.empty() || w <= 0 || h <= 0 || px.size() != (size_t)w * h) return {};
+  return encode_jpeg(px, w, h);
+}
 
 std::shared_ptr<CardStillJob> request_card_still(std::vector<uint32_t> px, int w, int h) {
   if (px.empty() || w <= 0 || h <= 0 || px.size() != (size_t)w * h) return {};

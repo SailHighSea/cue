@@ -5,13 +5,18 @@ CXX := $(CROSS)g++
 CC := $(CROSS)gcc
 WINDRES := $(CROSS)windres
 OFFICIAL ?= 0
-CXXFLAGS = -DCUE_OFFICIAL_BUILD=$(OFFICIAL)  -MMD -MP -std=c++20 -O2 -flto -ffunction-sections -fdata-sections -Wall -Wextra -Wno-missing-field-initializers -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 -DNOMINMAX
+# STORE=1: the Microsoft Store edition (no GitHub updater; file types come from the MSIX manifest)
+STORE ?= 0
+CXXFLAGS = -DCUE_OFFICIAL_BUILD=$(OFFICIAL) -DCUE_STORE_BUILD=$(STORE) -MMD -MP -std=c++20 -O2 -flto -ffunction-sections -fdata-sections -Wall -Wextra -Wno-missing-field-initializers -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 -DNOMINMAX
 LDFLAGS = -flto=2 -Wl,--gc-sections -municode -mwindows -static -static-libgcc -static-libstdc++ -s
-LIBS = -ldwmapi -lole32 -lshell32 -luuid -lshcore -lcomdlg32 -lwinmm -lwindowscodecs -lwinhttp -lbcrypt -lws2_32 -liphlpapi
+LIBS = -ldwmapi -lole32 -lshell32 -luuid -lshcore -lcomdlg32 -lwinmm -lwindowscodecs -lwinhttp -lbcrypt -lws2_32 -liphlpapi -lcrypt32
 SRC = $(wildcard src/core/*.cpp) $(wildcard src/ui/*.cpp) $(wildcard src/win/*.cpp)
 OBJ = $(patsubst src/%.cpp,build/obj/%.o,$(SRC)) build/obj/res.o
 
 VERSION := $(shell sed -n 's/^\#define CUE_VERSION "\(.*\)"/\1/p' src/core/version.h)
+# The Store wants four parts, the last 0, even when the version has two (1.4 -> 1.4.0.0).
+VERSION_PARTS = $(shell sed -n 's/^\#define CUE_VERSION_\(MAJOR\|MINOR\|PATCH\) \([0-9]*\)/\2/p' src/core/version.h)
+MSIX_VERSION := $(subst $(eval) ,.,$(strip $(VERSION_PARTS))).0
 
 all: build/Cue/Cue.exe
 
@@ -25,7 +30,7 @@ build/cue-preview-bench.exe: tools/preview_benchmark.cpp src/core/preview_protoc
 .PHONY: FORCE
 build/identity: FORCE
 	@mkdir -p build
-	@echo $(OFFICIAL) | cmp -s - $@ || echo $(OFFICIAL) > $@
+	@echo $(OFFICIAL) $(STORE) | cmp -s - $@ || echo $(OFFICIAL) $(STORE) > $@
 
 $(OBJ) $(SETUP_OBJ): build/identity src/core/build_identity.h
 
@@ -33,9 +38,9 @@ build/obj/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-build/obj/res.o: res/cue.rc res/cue.ico res/cue-audio.ico res/cue.manifest src/core/version.h
+build/obj/res.o: res/cue.rc res/cue.ico res/cue-audio.ico res/cue.manifest src/core/version.h build/identity
 	@mkdir -p $(dir $@)
-	$(WINDRES) -DCUE_OFFICIAL_BUILD=$(OFFICIAL) -I res res/cue.rc -O coff -o $@.tmp
+	$(WINDRES) -DCUE_OFFICIAL_BUILD=$(OFFICIAL) -DCUE_STORE_BUILD=$(STORE) -I res res/cue.rc -O coff -o $@.tmp
 	mv $@.tmp $@
 
 build/Cue/Cue.exe: $(OBJ)
@@ -76,6 +81,7 @@ build/setup/stub.exe: $(SETUP_OBJ)
 	$(CXX) $(SETUP_OBJ) -o $@ $(LDFLAGS) $(SETUP_LIBS)
 
 setup: build/Cue/Cue.exe build/setup/stub.exe
+	@test "$(STORE)" = 0 || { echo 'make setup builds the GitHub edition: run it without STORE=1'; exit 1; }
 	@# (the documents again: they were copied only when Cue.exe was linked, so an edit to them
 	@# alone reached the installer late)
 	cp docs/LICENSES.md build/Cue/LICENSES.md && cp docs/ASSETS.md build/Cue/ASSETS.md && cp docs/SECURITY.md build/Cue/SECURITY.md
@@ -83,6 +89,19 @@ setup: build/Cue/Cue.exe build/setup/stub.exe
 	cp LICENSE COPYRIGHT.md NOTICE.md docs/BRANDING.md docs/VALIDATION.md build/Cue/ && cp docs/*.md build/Cue/docs/
 	mkdir -p build/Cue/third_party && cp -r third_party/libmpv build/Cue/third_party/
 	python3 tools/make_setup.py build/Cue build/setup/stub.exe dist/Cue-$(VERSION)-Setup.exe
+
+# ── Microsoft Store package ────────────────────────────────────────
+# make msix: builds the Store edition (OFFICIAL=1 STORE=1) into build/Cue and packages it as
+# dist/Cue-<version>-Store-x64.msix (unsigned: Partner Center signs it). build/Cue must hold
+# libmpv-2.dll, as for make setup. Run make OFFICIAL=1 afterwards to get the GitHub edition back.
+msix:
+	$(MAKE) OFFICIAL=1 STORE=1 build/Cue/Cue.exe
+	cp docs/LICENSES.md build/Cue/LICENSES.md && cp docs/ASSETS.md build/Cue/ASSETS.md && cp docs/SECURITY.md build/Cue/SECURITY.md
+	cp res/sources-README.txt build/Cue/sources/README.txt
+	cp LICENSE COPYRIGHT.md NOTICE.md docs/BRANDING.md docs/VALIDATION.md build/Cue/ && cp docs/*.md build/Cue/docs/
+	mkdir -p build/Cue/third_party && cp -r third_party/libmpv build/Cue/third_party/
+	python3 tools/make_msix.py --build build/Cue --version $(MSIX_VERSION) --layout build/msix-layout --out dist/Cue-$(VERSION)-Store-x64.nopri.msix
+	@echo "Next, on Windows: tools\\make_msix.ps1 -Layout build\\msix-layout -Msix dist\\Cue-$(VERSION)-Store-x64.msix (MakePri + MakeAppx: the package for Partner Center)"
 
 clean:
 	rm -rf build
@@ -92,6 +111,6 @@ clean:
 i18n:
 	python3 tools/gen_i18n.py
 
-.PHONY: all clean setup i18n
+.PHONY: all clean setup msix i18n
 
 -include $(OBJ:.o=.d) $(SETUP_OBJ:.o=.d)

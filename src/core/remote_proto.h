@@ -5,6 +5,7 @@
 #pragma once
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,6 +27,7 @@ inline bool auth_event_room(size_t queued) { return queued < kAuthEventLimit; }
 // ── HTTP ────────────────────────────────────────────────────────────
 struct Request {
   std::string method, path;          // path without the query, percent-decoded
+  std::string target;                // the request target exactly as sent (path and query), for signatures
   std::map<std::string, std::string> query, headers;  // header names in lower case
 };
 // 1 complete (header_len set), 0 needs more bytes, -1 malformed or too large
@@ -126,6 +128,12 @@ struct State {
   std::string queue_notice;
   bool next_auto = false;
   std::string next;              // the next episode's name, or ""
+  std::string prev;              // the file before this one in the queue (what "prev" opens), or ""
+  std::string skip;              // a part to skip playing now ("opening", "ending", "recap", "preview"), or ""
+  double skip_to = 0;            // where its skip lands (seconds)
+  // a film's chapters (start, name; "" unnamed), when the PC has them on and there are two or
+  // more: the phone lists them and marks them on its timeline (none: the PC's choice is off)
+  std::vector<std::pair<double, std::string>> chapters;
   std::string color = "#a0508f"; // the film's light (the phone glows with it)
   std::string lang;              // Cue's interface language tag; the page reloads its words when it changes
 };

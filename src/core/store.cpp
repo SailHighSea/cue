@@ -6,6 +6,7 @@
 #include "store.h"
 #include "remote_proto.h"
 #include "file_io.h"
+#include "secret_store.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,44 @@
 
 #include "json.h"
 #include "i18n.h"
+
+int SettingsStore::unseal_remote() {
+  if (remote_unsealed) return 0;
+  int dropped = 0;
+  std::vector<std::string> tokens, sealed;
+  remote_seal_cache.clear();
+  for (const auto& b : remote_sealed) {
+    std::string plain;
+    if (secret::unseal(b, plain) && remote::valid_token(plain) &&
+        std::find(tokens.begin(), tokens.end(), plain) == tokens.end()) {
+      remote_seal_cache[plain] = b;
+      tokens.push_back(std::move(plain));
+      sealed.push_back(b);
+    } else ++dropped;
+  }
+  remote_tokens = std::move(tokens);
+  remote_sealed = std::move(sealed);
+  remote_unsealed = true;
+  return dropped;
+}
+
+void SettingsStore::seal_remote() {
+  if (!remote_unsealed) return;
+  // a credential that is still here keeps the sealed form it had (no new write for nothing)
+  std::vector<std::string> sealed;
+  std::map<std::string, std::string> cache;
+  for (const auto& t : remote_tokens) {
+    if (!remote::valid_token(t) || cache.count(t)) continue;  // a malformed one is never kept
+    auto it = remote_seal_cache.find(t);
+    std::string b = it != remote_seal_cache.end() ? it->second : secret::seal(t);
+    if (b.empty()) continue;
+    cache[t] = b;
+    sealed.push_back(std::move(b));
+  }
+  remote_sealed = std::move(sealed);
+  remote_seal_cache = std::move(cache);
+  remote_needs_seal = false;
+}
 
 std::string normalize_path(const std::string& p) {
   std::string o = p;
@@ -61,6 +100,10 @@ static void read_media(const JVal& r, RecentItem& it, const SubStyle& def) {
   it.aid_lang = r["alang"].str();
   it.sub_visible = r["subvis"].boolean(true);
   it.sub_delay = std::clamp(r["delay"].num(0), -600.0, 600.0);
+  it.artist = r["artist"].str();
+  if (it.artist.size() > 200) it.artist.clear();
+  it.chapters = std::clamp(r["chaps"].integer(0), 0, 10000);
+  it.chapter = std::clamp(r["chap"].integer(-1), -1, std::max(-1, it.chapters - 1));
 }
 
 // Reads any schema this app has written. Anything missing keeps its default.
@@ -85,8 +128,10 @@ bool SettingsStore::parse(const std::string& text) {
   // (on by default: each setting shows itself at work; saved under a new name, so the earlier
   // default of off, kept by the 1.3 test builds, does not carry over)
   settings_examples = pf["settings_hints"].boolean(true);
+  home_covers = pf["home_covers"].boolean(true);
   mini_sub_size = std::clamp(pf["mini_sub_size"].integer(0), 0, 2);
   smooth_motion = pf["smooth_motion"].boolean(false);
+  chapters = pf["chapters"].boolean(true);
   mini_pinned = pf["mini_pinned"].boolean(false);
   loop = pf["loop"].boolean(false);
   loop_all = pf["loop_all"].boolean(false) && !loop;
@@ -111,8 +156,19 @@ bool SettingsStore::parse(const std::string& text) {
   for (auto& f : rm["folders"].a)
     if (!f["path"].str().empty() && remote_folders.size() < 16) remote_folders.push_back({f["path"].str(), f["on"].boolean(true)});
   remote_tokens.clear();
-  for (auto& t : rm["tokens"].a)
-    if (remote::valid_token(t.str()) && remote_tokens.size() < 8) remote_tokens.push_back(t.str());
+  remote_sealed.clear();
+  remote_unsealed = remote_needs_seal = false;
+  if (rm["credentials"].t == JVal::Arr) {
+    for (auto& t : rm["credentials"].a)
+      if (!t.str().empty() && t.str().size() <= 4096 && remote_sealed.size() < remote::kMaxTokens) remote_sealed.push_back(t.str());
+    remote_unsealed = remote_sealed.empty();
+  } else {
+    // before 1.4: the credentials in the clear. Kept (the phones stay paired), sealed at once
+    for (auto& t : rm["tokens"].a)
+      if (remote::valid_token(t.str()) && remote_tokens.size() < remote::kMaxTokens) remote_tokens.push_back(t.str());
+    remote_unsealed = true;
+    remote_needs_seal = !remote_tokens.empty();
+  }
   const JVal& up = ss["update"];
   update_checked = up["checked"].integer<int64_t>(0);
   update_available = up["available"].str();
@@ -184,8 +240,10 @@ bool SettingsStore::save(const std::filesystem::path& path) const {
   o += std::string("    \"music_mono\": ") + (music_mono ? "true" : "false") + ",\n";
   o += std::string("    \"cover_tilt\": ") + (cover_tilt ? "true" : "false") + ",\n";
   o += std::string("    \"settings_hints\": ") + (settings_examples ? "true" : "false") + ",\n";
+  o += std::string("    \"home_covers\": ") + (home_covers ? "true" : "false") + ",\n";
   o += "    \"mini_sub_size\": " + std::to_string(mini_sub_size) + ",\n";
   o += std::string("    \"smooth_motion\": ") + (smooth_motion ? "true" : "false") + ",\n";
+  o += std::string("    \"chapters\": ") + (chapters ? "true" : "false") + ",\n";
   o += std::string("    \"mini_pinned\": ") + (mini_pinned ? "true" : "false") + ",\n";
   o += std::string("    \"loop\": ") + (loop ? "true" : "false") + ",\n";
   o += std::string("    \"loop_all\": ") + (loop_all ? "true" : "false") + ",\n";
@@ -201,8 +259,17 @@ bool SettingsStore::save(const std::filesystem::path& path) const {
       o += (i ? ", " : "") + std::string("{\"path\": ") + json_quote(remote_folders[i].path) + ", \"on\": " + (remote_folders[i].on ? "true" : "false") + "}";
     o += "]";
   }
-  o += ", \"tokens\": [";
-  for (size_t i = 0; i < remote_tokens.size(); ++i) o += (i ? ", " : "") + json_quote(remote_tokens[i]);
+  // only the sealed form ever reaches the disk (a credential that could not be sealed is not
+  // written: that phone pairs again next time)
+  if (remote_needs_seal) {
+    // (read from a state.json before 1.4 and not sealed yet: kept as it was until it is, so a
+    // save in between never loses the paired phones)
+    o += ", \"tokens\": [";
+    for (size_t i = 0; i < remote_tokens.size(); ++i) o += (i ? ", " : "") + json_quote(remote_tokens[i]);
+  } else {
+    o += ", \"credentials\": [";
+    for (size_t i = 0; i < remote_sealed.size(); ++i) o += (i ? ", " : "") + json_quote(remote_sealed[i]);
+  }
   o += "]},\n";
   o += "    \"slang\": " + json_quote(slang) + ", \"alang\": " + json_quote(alang) + "\n  },\n";
   // session
@@ -228,6 +295,8 @@ bool SettingsStore::save(const std::filesystem::path& path) const {
     if (r.aid >= 0 || r.aid == -2) o += ", \"aid\": " + std::to_string(r.aid) + ", \"alang\": " + json_quote(r.aid_lang);
     if (!r.sub_visible) o += ", \"subvis\": false";
     if (std::fabs(r.sub_delay) > 0.001) { std::snprintf(b, sizeof b, ", \"delay\": %.3f", r.sub_delay); o += b; }
+    if (!r.artist.empty()) o += ", \"artist\": " + json_quote(r.artist);
+    if (r.chapters > 0) o += ", \"chaps\": " + std::to_string(r.chapters) + ", \"chap\": " + std::to_string(r.chapter);
     if (r.has_style) o += ", \"style\": " + style_json(r.style);
     o += "}";
   }
@@ -239,9 +308,17 @@ bool SettingsStore::save(const std::filesystem::path& path) const {
   // recovery copy once, then leave both files untouched on repeated saves.
   if (file_contents_equal(path,o)) {
     if (!file_contents_equal(bak,o)) {
+#ifdef _WIN32
+      // Windows' own copy: MinGW's std::filesystem::copy_file takes any two files on one drive
+      // for the same file (no inode numbers on Windows) and refuses with "file exists", so the
+      // backup was never refreshed and every unchanged save reported a failure (found by
+      // tools/wine-tests.sh)
+      return CopyFileW(path.c_str(), bak.c_str(), FALSE) != 0;
+#else
       std::error_code backup_error;
       std::filesystem::copy_file(path,bak,std::filesystem::copy_options::overwrite_existing,backup_error);
       return !backup_error;
+#endif
     }
     return true;
   }
@@ -333,6 +410,7 @@ double SettingsStore::resume_point(const std::string& p) const {
   for (auto& r : recents) {
     if (normalize_path(r.path) != n) continue;
     if (r.pos < 10) return -1;
+    if (r.dur > 0 && r.dur < kShortClip) return -1;
     if (r.dur > 0 && (r.pos > r.dur - 30 || r.pos > r.dur * 0.97)) return -1;
     return r.pos;
   }

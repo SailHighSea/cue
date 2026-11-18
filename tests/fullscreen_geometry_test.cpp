@@ -37,8 +37,8 @@ int main() {
   assert(!restore_saved_window(false,1600,670));
   assert(!restore_saved_window(false,1280,960));
   assert(!restore_saved_window(false,720,1280));
-  assert(restore_saved_window(false,1280,720));
-  assert(restore_saved_window(false,1280,721));
+  assert(!restore_saved_window(false,1280,720));  // (15/11: always the default size, centred)
+  assert(!restore_saved_window(false,1280,721));
   assert(!restore_saved_window(true,1280,720));
   assert(!viewport_ready_for_controls(1920,1080,1280,720,true,.01,0));
   assert(!viewport_ready_for_controls(1920,1080,1920,1080,false,.01,0));

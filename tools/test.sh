@@ -13,6 +13,7 @@ done
 for source in tests/*_test.cpp; do
   [[ "$source" == tests/*_engine_test.cpp ]] && continue    # Windows only (real DLL)
   [[ "$source" == tests/ui_language_win_test.cpp ]] && continue  # Windows only (real language API)
+  [[ "$source" == tests/recent_thumbs_win_test.cpp ]] && continue  # Windows only (WIC, the home's pictures on disk)
   executable="build/tests/$(basename "${source%.cpp}")"
   g++ -std=c++20 -O2 "$source" "${objects[@]}" -o "$executable"
   "$executable"
@@ -22,4 +23,4 @@ done
 if command -v python3 >/dev/null; then python3 tests/hidden_playback_test.py; fi
 
 # Deterministic production JavaScript transport regressions (no browser dependency).
-if command -v node >/dev/null; then node tests/remote_lifecycle_test.cjs; node tests/remote_fetch_test.cjs; fi
+if command -v node >/dev/null; then node tests/remote_lifecycle_test.cjs; node tests/remote_fetch_test.cjs; node tests/remote_auth_page_test.cjs; fi

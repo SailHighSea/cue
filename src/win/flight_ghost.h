@@ -6,6 +6,7 @@
 #pragma once
 #include <windows.h>
 #include <dwmapi.h>
+#include <cstdint>
 
 class FlightGhost {
  public:
@@ -36,4 +37,24 @@ class StageCover {
 
  private:
   HWND wnd_ = nullptr;
+};
+
+// A black stand-in over the window while it grows and its picture is black (a film opening, the
+// way home): see flight_ghost.cpp. Size, place and pixels reach Windows in one call each step.
+class GrowCover {
+ public:
+  // shown (or moved) at `screen`, the window's client area on screen; `radius`: its corners
+  bool place(HINSTANCE inst, HWND owner, const RECT& screen, int radius);
+  void end();
+  bool on() const { return wnd_ != nullptr; }
+  ~GrowCover();
+
+ private:
+  HWND wnd_ = nullptr;
+  HDC dc_ = nullptr;
+  HBITMAP bmp_ = nullptr, old_ = nullptr;
+  uint32_t* px_ = nullptr;
+  int bw_ = 0, bh_ = 0;           // the bitmap (only ever grows; the cover uses its top-left part)
+  int cw_ = 0, ch_ = 0, cr_ = 0;  // the size and corners drawn in it last
+  void corners(int w, int h, int r, uint32_t v);
 };

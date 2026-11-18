@@ -25,7 +25,8 @@ StyleCaps style_caps(const SubStyle& st, SubKind kind) {
   return c;
 }
 
-std::vector<PropSet> sub_style_props(const SubStyle& st, SubKind kind, double typography_scale) {
+std::vector<PropSet> sub_style_props(const SubStyle& st, SubKind kind, double typography_scale, double dim) {
+  const double k = std::isfinite(dim) ? std::clamp(dim, 0.0, 1.0) : 1.0;
   // Original ASS typesetting and bitmap subtitles remain authored by the file.
   const double scale=style_caps(st,kind).size&&std::isfinite(typography_scale)
       ?std::clamp(typography_scale,1.0,2.0):1.0;
@@ -52,10 +53,10 @@ std::vector<PropSet> sub_style_props(const SubStyle& st, SubKind kind, double ty
   add({"sub-spacing"}, f(st.tracking * em * scale));
   // libass line spacing is already in physical frame pixels, unlike font metrics.
   add({"sub-line-spacing", "sub-ass-line-spacing", "ass-line-spacing"}, f(st.line_gap * em));
-  add({"sub-color"}, rgba(1, 1, 1, st.text_op / 100.0));
+  add({"sub-color"}, rgba(1, 1, 1, k * st.text_op / 100.0));
   add({"sub-pos"}, std::to_string((int)(st.pos + 0.5)));
 
-  double bg = st.bg_op / 100.0;
+  double bg = k * st.bg_op / 100.0;
   if (st.bg_op > 0) {
     // A box that hugs the subtitle block, never a full-width bar.
     // Only the box: no outline around the letters (it doubled up into a dark halo).
@@ -70,10 +71,10 @@ std::vector<PropSet> sub_style_props(const SubStyle& st, SubKind kind, double ty
     // Transparent background: the outline is the user's call, from none to thick.
     add({"sub-border-style"}, "outline-and-shadow");
     add({"sub-back-color"}, rgba(0, 0, 0, 0));  // older mpv draws its box from this: clear it
-    add({"sub-outline-color", "sub-border-color"}, rgba(0, 0, 0, 0.9 * st.text_op / 100.0));
+    add({"sub-outline-color", "sub-border-color"}, rgba(0, 0, 0, k * 0.9 * st.text_op / 100.0));
     add({"sub-outline-size", "sub-border-size"}, f(st.outline * 0.9 * scale));
     add({"sub-shadow-offset"}, st.outline > 0 ? f(scale) : "0");
-    add({"sub-shadow-color"}, rgba(0, 0, 0, 0.45 * st.text_op / 100.0));
+    add({"sub-shadow-color"}, rgba(0, 0, 0, k * 0.45 * st.text_op / 100.0));
   }
   return v;
 }

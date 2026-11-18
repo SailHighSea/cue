@@ -129,7 +129,7 @@ void Overlay::frame() {
   // calm moments at 30 Hz (20 on a 4K screen); entrances, exits and celebrations on every frame
   long long px = (long long)surface_.width() * surface_.height();
   double calm = px > 16000000 ? 0.066 : px > 4000000 ? 0.05 : 0.033;  // 8K breathes at 15 Hz
-  if (view_->fast(t) || t - drawn_ >= calm - 0.004) { present(); drawn_ = t; }
+  if (view_->fast(t) || (t - drawn_ >= calm - 0.004 && view_->changed(t))) { present(); drawn_ = t; }
   next();
 }
 

@@ -2,6 +2,7 @@
 // Build: see README.md (Desenvolvimento).
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include "../src/core/i18n.h"
 #include <vector>
@@ -35,6 +36,40 @@ void save_canvas(const Canvas& c, const std::string& name) {
   std::printf("%s\n", name.c_str());
 }
 
+
+// sample pictures for the list (raw 0xFFRRGGBB files made by the caller, e.g. ImageMagick):
+// /tmp/cue-thumb-<name>.rgba with its size in the first two lines of /tmp/cue-thumb-<name>.txt
+static std::shared_ptr<const HomeThumb> load_thumb(const std::string& name, bool cover = false) {
+  FILE* m = std::fopen(("/tmp/cue-thumb-" + name + ".txt").c_str(), "r");
+  if (!m) return nullptr;
+  int w = 0, h = 0;
+  if (std::fscanf(m, "%d %d", &w, &h) != 2) { std::fclose(m); return nullptr; }
+  std::fclose(m);
+  auto t = std::make_shared<HomeThumb>();
+  t->w = w; t->h = h; t->cover = cover;
+  t->px.resize((size_t)w * h);
+  FILE* f = std::fopen(("/tmp/cue-thumb-" + name + ".rgba").c_str(), "rb");
+  if (!f) return nullptr;
+  std::vector<unsigned char> b((size_t)w * h * 4);
+  size_t got = std::fread(b.data(), 1, b.size(), f);
+  std::fclose(f);
+  if (got != b.size()) return nullptr;
+  for (size_t i = 0; i < t->px.size(); ++i) t->px[i] = 0xFF000000u | b[i * 4] << 16 | b[i * 4 + 1] << 8 | b[i * 4 + 2];
+  return t;
+}
+
+static std::vector<HomeRow> sample_rows() {
+  std::vector<HomeRow> r = {
+      {"Cena de exemplo", "faltam 41 min", 0.51, "ontem", false, HomeKind::Video, "C:\\v\\cena.mkv", load_thumb("frame1")},
+      {"Série de exemplo", "faltam 12 min", 0.62, "S01E04 · ontem", false, HomeKind::Episode, "C:\\v\\serie.mkv", load_thumb("frame2")},
+      {"entrevista", "faltam 26 min", 0.3, "há 3 dias", true, HomeKind::Listen, "C:\\a\\entrevista.mp3"},
+      {"Pela Janela", "4 min", -1, "Maria Bethânia · há 1 semana", true, HomeKind::Music, "C:\\m\\janela.flac"},
+      {"O Hobbit", "faltam 6 h 12 min", 0.2, "capítulo 4 de 19 · há 2 semanas", true, HomeKind::Book, "C:\\b\\hobbit.m4b"},
+      {"Landscape at sunset (final revision)", "12 min", -1, "há 2 meses", false, HomeKind::Video, "C:\\v\\landscape.mp4"},
+  };
+  return r;
+}
+
 static void run(HomeView& hv, double& now, double secs) {
   for (double t = 0; t < secs; t += 1 / 60.0) { now += 1 / 60.0; hv.tick(now, 1 / 60.0); }
 }
@@ -43,16 +78,13 @@ int main(int argc, char** argv) {
   // CUE_LANG=en|es|fr|zh-Hans picks the interface language (Portuguese by default)
   { i18n::Lang l = i18n::Lang::PtBR; if (const char* e = std::getenv("CUE_LANG")) i18n::parse_tag(e, l); i18n::set_language(l); }
   std::string out = argc > 1 ? argv[1] : "out";
-  int s = argc > 2 ? std::atoi(argv[2]) : 2;
+  double s = argc > 2 ? std::atof(argv[2]) : 2;
   // optional window size in art px (argv 3 and 4): a maximized window, an ultrawide
-  int W = (argc > 3 ? std::atoi(argv[3]) : 480) * s, H = (argc > 4 ? std::atoi(argv[4]) : 270) * s;
+  int W = (int)std::lround((argc > 3 ? std::atoi(argv[3]) : 480) * s), H = (int)std::lround((argc > 4 ? std::atoi(argv[4]) : 270) * s);
   HomeView hv;
   hv.set_size(W, H, s);
-  hv.set_rows({{"Cena de exemplo", "faltam 41 min", 0.51, "vídeo"},
-               {"Série de exemplo", "faltam 12 min", 0.62, "S01E04 · 3 episódios"},
-               {"entrevista", "faltam 6 min", 0.3, "áudio", true},
-               {"filme", "faltam 29 min", 0.44, "vídeo"},
-               {"Landscape at sunset (final revision)", "12 min", -1, "vídeo"}});
+  hv.set_rows(sample_rows());
+  hv.set_thumb(3, load_thumb("cover", true), -100);
   Canvas c;
   double now = 10;
   run(hv, now, 0.1);
@@ -116,7 +148,7 @@ int main(int argc, char** argv) {
 
 #ifdef WITH_PLAY
   extern void preview_play(const std::string&, int);
-  preview_play(out, s);
+  preview_play(out, (int)s);
 #endif
   return 0;
 }

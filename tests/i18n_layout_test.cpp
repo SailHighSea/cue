@@ -1,6 +1,6 @@
 // Layout in every interface language: no label cut or spilling out of its row, no menu outside
 // the window, no buttons on top of each other. Every panel of the player, the home and its
-// menu, the four welcome screens and the installer, at the four interface sizes, in landscape
+// menu, the three welcome screens and the installer, at the four interface sizes, in landscape
 // windows, full screen, a portrait (vertical video) window and several DPI scales.
 #include <algorithm>
 #include <array>
@@ -18,6 +18,7 @@
 #define private public  // the test reads the computed layout (rows, rects) directly
 #include "../installer/setup_ui.h"
 #include "../src/ui/home.h"
+#include "../src/ui/news_view.h"
 #include "../src/ui/onboarding.h"
 #include "../src/ui/play.h"
 #undef private
@@ -159,7 +160,7 @@ static void check_welcome(int W, int H, double s) {
     std::string tag = "welcome " + std::to_string(pg + 1);
     expect(inside(L.next, win) && inside(L.back, win), tag + " footer");
     expect(L.back.r() < L.dots.front().x && L.dots.back().r() < L.next.x, tag + " buttons apart " + R(L.back) + " " + R(L.next));
-    str::Id heads[4] = {str::ob_intro, str::ob_ambient_title, str::ob_size_title, str::ob_next_title};
+    str::Id heads[3] = {str::ob_intro, str::ob_ambient_title, str::ob_size_title};
     expect(text_w(tr(heads[pg]), 2 * ob.s) <= W, tag + " heading");
   }
   auto& L1 = ob.L_[1];
@@ -170,25 +171,49 @@ static void check_welcome(int W, int H, double s) {
   for (size_t i = 0; i < L2.segs.size(); ++i) expect(inside(L2.segs[i], win), "welcome 3 size " + std::to_string(i));
   str::Id sizes[kUiSizes] = {str::size_small, str::size_medium, str::size_large, str::size_larger};
   for (int i = 0; i < kUiSizes; ++i) expect(text_w(tr(sizes[i]), ob.s) <= L2.segs[i].w, "welcome 3 size word");
-  auto& L3 = ob.L_[3];
-  for (auto& r : L3.items) { expect(inside(r, win), "welcome 4 row " + R(r)); expect(r.b() <= L3.next.y, "welcome 4 row above footer"); }
+}
+
+// "saiu do forno": every item whole (none of its words cut after the fourth line), inside the
+// window, the button under them
+static std::string no_spaces(const std::string& t) { std::string o; for (char ch : t) if (ch != ' ') o += ch; return o; }
+static void check_news(int W, int H, double s) {
+  NewsView v;
+  v.version = "1.4";
+  v.set_size(W, H, s);
+  const Rect win{0, 0, W, H};
+  const str::Id lines[3] = {str::news_home_line, str::news_chapters_line, str::news_light_line};
+  for (size_t i = 0; i < v.items_.size() && i < 3; ++i) {
+    expect(inside(v.items_[i], win), "news item " + std::to_string(i) + " " + R(v.items_[i]));
+    std::string got;
+    for (auto& l : v.lines_[i]) got += l;
+    expect(no_spaces(got) == no_spaces(tr(lines[i])), std::string("news words whole: ") + tr(lines[i]));
+    expect(v.buttons_[0].y >= v.items_[i].b(), "news button under the items");
+  }
+  expect(inside(v.buttons_[0], win), "news button");
 }
 
 static void check_setup() {
   int W = SetupView::art_w();
   expect(W >= SetupView::kBaseW && W <= 600, "installer width " + std::to_string(W));
-  int cw = W - (168 + 28) - 28;
+  int cw = W - (144 + 24) - 24;
   for (str::Id id : {str::setup_keep_prefs, str::setup_desktop, str::setup_launch}) expect(text_w(tr(id), 1) + 13 <= cw + 5, "check label");
   for (str::Id id : {str::setup_remove_question, str::setup_frames_kept, str::setup_installed, str::setup_updated,
                      str::setup_start_menu, str::setup_removed, str::setup_ready_update})
     expect(text_w(tr(id), 1) <= cw, std::string("line ") + i18n::key_name(id));
+  expect(setup_scale(96) == 2 && setup_scale(120) == 2 && setup_scale(144) == 3 && setup_scale(168) == 3 &&
+             setup_scale(192) == 4 && setup_scale(240) == 5,
+         "installer pixel: whole, 2 at 100% and 125%, 3 at 150% and 175%, 4 at 200%, 5 at 250%");
+  for (unsigned dpi : {96u, 120u, 144u, 168u, 192u, 240u})
   for (SetupMode m : {SetupMode::Install, SetupMode::Upgrade, SetupMode::Update, SetupMode::Uninstall})
     for (SetupStage st : {SetupStage::Ask, SetupStage::Done, SetupStage::Failed}) {
+      const double s = setup_scale(dpi);
       SetupView v; v.mode = m; v.stage = st; v.old_version = "0.9";
-      v.set_size(W * 2, SetupView::kH * 2, 2);
+      const int cw = (int)(W * s), ch = (int)(SetupView::kH * s);
+      v.set_size(cw, ch, s);
       if (!v.secondary_label().empty()) expect(v.r_[1].r() <= v.r_[0].x, "installer buttons apart");
-      expect(v.r_[1].x >= (168 + 20) * 2, "installer buttons in the column");
-      expect(text_w(v.primary_label(), 2) + 9 * 2 <= v.r_[0].w, "installer primary words");
+      expect(v.r_[1].x >= (int)((144 + 16) * s), "installer buttons in the column");
+      expect(text_w(v.primary_label(), s) + (int)(9 * s) <= v.r_[0].w, "installer primary words");
+      for (int i = 0; i < 2; ++i) expect(v.r_[i].x >= 0 && v.r_[i].r() <= cw && v.r_[i].b() <= ch, "installer buttons inside");
     }
 }
 
@@ -207,6 +232,7 @@ int main() {
         check_player(w.w, w.h, portrait_scale(s, w.w, w.h, choice));
         check_home(w.w, w.h, s);
         check_welcome(w.w, w.h, s);
+        check_news(w.w, w.h, s);
       }
     }
     where = std::string(i18n::tag((i18n::Lang)li)) + " · installer";
@@ -214,5 +240,5 @@ int main() {
   }
   if (failures) { std::printf("%d of %d layout checks failed\n", failures, checks); return 1; }
   std::printf("Layout: %d checks in 8 languages x 4 sizes x 10 windows (DPI 100-250%%, full screen, portrait) for every "
-              "player panel, tooltips, toasts, the home and its menu, the welcome and the installer passed\n", checks);
+              "player panel, tooltips, toasts, the home and its menu, the welcome, what is new and the installer passed\n", checks);
 }

@@ -55,6 +55,7 @@ int main() {
         const double s = p.panel_s();
         if (!p.settings_compact_) assert(row_of(p, PlayView::R_PREVIEW) >= 0);
         if (!p.settings_side_) continue;
+        // (16/11: Settings, a big panel, puts it beside too, wider while it shows it; it was gone in the large sizes)
         ++sides;
         const int col = (int)std::lround(196 * s);
         for (auto& r : p.rows_)
@@ -66,7 +67,7 @@ int main() {
       p.panel_click(row_of(p, PlayView::R_BACK_MORE), 0, 0, t);
       assert(!p.in.settings_examples && row_of(p, PlayView::R_PREVIEW) < 0);
     }
-  assert(sides > 0);
+  assert(sides > 0);  // (16/11: beside the rows where the window is wide and too short for it on top)
   // the interface's size changed with Settings open (a large one): decided afresh, the picture on
   // top again where it fits (it used to stay away until Settings was opened again)
   for (bool music : {false, true})
@@ -86,9 +87,9 @@ int main() {
         assert(L.x >= 0 && L.x + L.c.w <= W && L.y >= 0 && L.y + L.c.h <= H);
       }
     }
-  // the interface's page (Settings folded it there at a large size): a smaller size picked in it
-  // leaves room for all of Settings, which comes back with the sizes in place (it stayed on the
-  // page); still short of room, the page stays
+  // the interface's page: since 1.4 Settings always keeps the interface's choices one row
+  // deeper ("interface  medium · with background >"); the page stays open across sizes, and
+  // Settings' row names what is chosen
   int folds = 0;
   for (bool music : {false, true}) {
     PlayView p;
@@ -97,19 +98,75 @@ int main() {
     p.set_base_scale(5); p.resize(W, H, 5);
     double t = 1; p.reset(t); settle(p, t);
     p.open_panel_for_preview(11, t); settle(p, t);
-    assert(p.settings_fold_);
+    assert(p.settings_fold_ && row_of(p, PlayView::R_UISCALE) < 0);
     ++folds;
     const int sub = row_of(p, PlayView::R_INTERFACE);
-    assert(sub >= 0);
+    assert(sub >= 0 && !p.rows_[sub].right.empty());
     p.panel_click(sub, -1, 0, t); settle(p, t);
+    assert(p.panel_ == PlayView::Panel::Interface && row_of(p, PlayView::R_UISCALE) >= 0);
+    p.resize(W, H, 4.5); settle(p, t);
     assert(p.panel_ == PlayView::Panel::Interface);
-    p.resize(W, H, 4.5); settle(p, t);   // still large: the page stays (or Settings, if it fits)
-    if (p.panel_ == PlayView::Panel::Settings) assert(!p.settings_fold_ && row_of(p, PlayView::R_UISCALE) >= 0);
-    p.resize(W, H, 2); settle(p, t);     // medium: all of Settings, the sizes in it
-
-    assert(p.panel_ == PlayView::Panel::Settings && !p.settings_fold_ && row_of(p, PlayView::R_UISCALE) >= 0);
+    p.resize(W, H, 2); settle(p, t);
+    assert(p.panel_ == PlayView::Panel::Interface && row_of(p, PlayView::R_UISCALE) >= 0);
   }
   assert(folds == 2);
+  // the interface's page is a page of Settings: the same sheet (width and side), its picture where
+  // Settings had it (with the "i" on), each group named once with its icon, the size's picture first;
+  // back, Settings is where it was
+  {
+    int pages = 0, pics = 0, fallbacks = 0;
+    for (int lang : {0, 1, 6}) for (bool music : {false, true}) for (int ex : {0, 1})
+    for (auto wh : {std::pair{1280, 720}, {1920, 1080}, {600, 1000}, {1600, 560}, {900, 520}}) for (double sc : {1.5, 2., 3.}) {
+      i18n::set_language((i18n::Lang)lang);
+      PlayView p; p.in.dur = 300; p.in.audio_only = music; p.in.cover_scene = music; p.in.settings_examples = ex; p.in.smooth_available = true;
+      p.resize(wh.first, wh.second, sc); double t = 1; p.reset(t); settle(p, t);
+      p.open_panel_for_preview(11, t); settle(p, t);
+      const Rect st = p.panel_rect();
+      const bool st_pic = row_of(p, PlayView::R_PREVIEW) >= 0, st_side = p.settings_side_;
+      const int sub = row_of(p, PlayView::R_INTERFACE);
+      assert(sub >= 0);
+      p.panel_click(sub, -1, 0, t); settle(p, t);
+      assert(p.panel_ == PlayView::Panel::Interface);
+      ++pages;
+      const Rect it = p.panel_rect();
+      if (p.itf_pic_) {
+        (void)0;  // (wider only where its own segments need it)
+        if (it.w == st.w) assert(it.x == st.x);
+        assert((row_of(p, PlayView::R_PREVIEW) >= 0) == st_pic);
+        assert(p.pic_side() == st_side);
+        if (st_pic || st_side) { ++pics; assert(p.demo_ == PlayView::D_SIZE); }
+      }
+      assert(ex || (row_of(p, PlayView::R_PREVIEW) < 0 && !p.pic_side()));
+      int named = 0;
+      for (auto& r : p.rows_) if (r.k == PlayView::RK::Hint) { ++named; assert(r.icon && r.label != p.rows_[0].label); }
+      // (16/11: the size is a named group; the controls' background is a switch on its own line)
+      assert(named == 1);
+      if (const int bg = row_of(p, PlayView::R_CONTROLS_FREE); bg >= 0) assert(p.rows_[bg].k == PlayView::RK::Toggle && p.rows_[bg].icon);
+      const int back = row_of(p, PlayView::R_BACK_SETTINGS);
+      p.panel_click(back, -1, 0, t); settle(p, t);
+      assert(p.panel_ == PlayView::Panel::Settings);
+      const Rect again = p.panel_rect();
+      assert(again.x == st.x && again.w == st.w);
+    }
+    // (the one panel shows the picture on top or not at all: never beside, so a few short windows go without)
+    assert(pages == 180 && pics >= 24);
+    std::printf("interface page: %d pages, %d with the picture, %d without room for it\n", pages, pics, fallbacks);
+    i18n::set_language(i18n::Lang::PtBR);
+  }
+  // in a window too narrow for "moyenne · sans fond" the row names the size alone (never over its
+  // words); a wider window, with no new rows, names both again
+  {
+    i18n::set_language(i18n::Lang::Fr);
+    PlayView p; p.in.dur = 300; p.in.controls_free = true;
+    p.resize(500, 900, 3); double t = 1; p.reset(t); settle(p, t);
+    p.open_panel_for_preview(11, t); settle(p, t);
+    const int i = row_of(p, PlayView::R_INTERFACE);
+    assert(i >= 0 && p.rows_[i].right.find("\xc2\xb7") == std::string::npos);
+    p.resize(1920, 1080, 2); settle(p, t);
+    const int j = row_of(p, PlayView::R_INTERFACE);
+    assert(j >= 0 && p.rows_[j].right.find("\xc2\xb7") != std::string::npos);
+    i18n::set_language(i18n::Lang::PtBR);
+  }
   // The portrait recording: toggling the real header button must not change the
   // panel's horizontal placement or emit a native window-drag action.
   i18n::set_language(i18n::Lang::PtBR);

@@ -18,6 +18,15 @@ Finishing an active request trades some final-position latency for progress and 
 
 The earlier 40–120 ms adaptive cooldown and speculative lookahead have been removed. There is no arbitrary cache population, no full-timeline scan and no persistent thumbnail cache. Reintroducing optional pre-generation requires measured benefit on Windows.
 
+## Keyframes already decoded (1.4)
+
+A navigation request is a keyframe seek, so every one-second interval between two keyframes returns the same picture. The helper keeps the pictures of the last 64 keyframes it decoded (at most 160 × 90 each) and answers a request without seeking when it can prove where the request lands:
+
+- from its own answers: a request at t that returned the keyframe a means there is no keyframe in (a, t], so every time in [a, t] lands on a;
+- from the file's index (Matroska Cues, an MP4/MOV video track's stss, stts and ctts), read once after the first answer, with bounded reads through a 64 KB block cache. The engine's times may be shifted from the file's (an MP4 edit list, a rebased start); the shift is taken from the first decoded answer, and the index is used only after two decoded answers agree with it. Any later decoded answer that disagrees drops it for the file.
+
+Colour probes (exact seeks) and the home's pictures never use or fill this cache. An answer from it carries the actual keyframe time, as a decoded one does. HEVC files are decoded with slice threading (WPP/tiles) instead of frame threading, set file-local from the engine's `on_preloaded` hook; H.264 keeps frame threading, faster for it. `tests/keyframe_index_test.cpp` covers the parsers (built and damaged files) and the rules; the before/after comparison with the real helper is in VALIDATION.md.
+
 ## Display lifetime and resources
 
 A new hover clears the displayed image and resets duplicate-request suppression, while preserving the per-file RAM cache. During one continuous hover, the displayed picture stays in place until a matching new sample is available, and its timestamp remains attached to it. An ordinary cache miss never collapses the card to a time-only tooltip. On a new hover the old pixels are cleared, while the per-file card aspect is retained; the requested time appears in the same footer while waiting. Known media geometry reserves space even before the first image. File changes clear the pixels and geometry. Late replies cannot paint another destination. Returning at the same screen coordinate is processed after leaving the window or losing focus. The desktop and phone keep independent requested destinations.
